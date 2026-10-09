@@ -88,7 +88,15 @@ public class OnigiriClient implements ClientModInitializer {
 		// knowing the hotkey.
 		VideoSettingsHook.register();
 
-		LOGGER.info("Onigiri ready - F6 opens settings, F8 toggles the renderer");
+		// On a phone there may be no F6 key at all - Pojav exposes an on-screen
+		// keyboard, and most sessions never open it. The hotkey is a convenience
+		// for anyone with a bluetooth keyboard; the reliable route on a touch
+		// device is Options > Video > Onigiri..., which is why that button exists.
+		//
+		// The active texture and attachment ids are logged on the first rendered
+		// frame because the "no visible effect" failure is otherwise silent.
+		LOGGER.info("Onigiri ready. F6 settings, F8 toggle (a bluetooth keyboard is needed for these; "
+				+ "on a touch device use Options > Video > Onigiri...)");
 	}
 
 	private void onClientTick(Minecraft client) {

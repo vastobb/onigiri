@@ -225,6 +225,23 @@ public final class OnigiriScreen extends Screen {
 		}
 	}
 
+	/**
+	 * Arranges the layout and registers it as a renderable.
+	 *
+	 * <p>This is the step that was missing, and it is why the screen came up
+	 * blank: elements were being added to the {@link HeaderAndFooterLayout} but
+ * the layout itself was never added to the screen, so it was laid out and then
+	 * never drawn. Vanilla's own {@code OptionsSubScreen} does exactly this pair
+	 * of calls in its {@code repositionElements}, which is also where the screen
+	 * resizes the layout, so overriding it is the supported hook rather than a
+	 * workaround.
+	 */
+	@Override
+	protected void repositionElements() {
+		layout.arrangeElements();
+		addRenderableWidget(layout);
+	}
+
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
 		super.extractRenderState(graphics, mouseX, mouseY, partialTick);

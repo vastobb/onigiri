@@ -83,6 +83,7 @@ public final class OnigiriPipeline implements AutoCloseable {
 	private int effectHeight;
 
 	private int emptyVao;
+	private boolean attachmentsLogged;
 	private boolean initialised;
 	private boolean disposed;
 
@@ -212,6 +213,34 @@ public final class OnigiriPipeline implements AutoCloseable {
 		return initialised;
 	}
 
+	/**
+	 * Logs, once, what the game actually had bound when the render hook fired.
+	 *
+	 * <p>This exists because the failure mode here is silent by design: when the
+	 * world is not in a sampleable framebuffer the frame is skipped, the game
+	 * looks like plain vanilla, and the log says nothing at all. That is exactly
+	 * what happened on the first real Android run - the pipeline initialised
+	 * cleanly, then quietly did nothing every frame. One log line turns that
+	 * from a mystery into a diagnosis.
+	 */
+	private void logAttachmentsOnce(int colorTexture, int depthTexture) {
+		if (attachmentsLogged) {
+			return;
+		}
+
+		attachmentsLogged = true;
+
+		LOGGER.info("First frame: draw FBO {}, colour attachment {}, depth attachment {}",
+				FramebufferAccess.boundFramebuffer(), colorTexture, depthTexture);
+
+		if (colorTexture == 0 || depthTexture == 0) {
+			LOGGER.warn("The world's framebuffer is not sampleable - post-processing is being skipped. "
+					+ "FBO={} colour={} depth={}. A renderbuffer depth attachment (common with MSAA) "
+					+ "cannot be read; vanilla MC or disabling MSAA may help.",
+					FramebufferAccess.boundFramebuffer(), colorTexture, depthTexture);
+		}
+	}
+
 	/** Runs one frame. The caller must already have the world in the main FBO. */
 	public void render() {
 		if (!initialised) {
@@ -220,6 +249,8 @@ public final class OnigiriPipeline implements AutoCloseable {
 
 		int colorTexture = FramebufferAccess.boundColorTexture();
 		int depthTexture = FramebufferAccess.boundDepthTexture();
+
+		logAttachmentsOnce(colorTexture, depthTexture);
 
 		// The default framebuffer is not sampleable, so there is nothing to read
 		// from. Drop history and let the next frame try again.

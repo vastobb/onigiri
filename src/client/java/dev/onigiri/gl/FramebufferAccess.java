@@ -32,8 +32,7 @@ public final class FramebufferAccess {
 	private FramebufferAccess() {
 	}
 
-	/**
-	 * Returns the texture attached to {@code attachment} of the currently bound
+	/** Returns the texture attached to {@code attachment} of the currently bound
 	 * framebuffer, or 0 when the slot is empty, is a renderbuffer, or the bound
 	 * target is the default framebuffer.
 	 *
@@ -62,6 +61,17 @@ public final class FramebufferAccess {
 		// Guard against a driver that leaves the slot untouched on a renderbuffer
 		// attachment, which would otherwise hand back whatever was there before.
 		return texture == 0 ? 0 : texture;
+	}
+
+	/**
+	 * The currently bound draw framebuffer, for diagnostics.
+	 *
+	 * <p>Not used by the renderer itself - it only needs the attachments - but
+	 * this is the first thing worth knowing when the chain quietly does nothing,
+	 * which is exactly the failure mode it is easy to end up in.
+	 */
+	public static int boundFramebuffer() {
+		return GL30.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
 	}
 
 	/** The colour texture of the bound framebuffer, or 0 for the default one. */
