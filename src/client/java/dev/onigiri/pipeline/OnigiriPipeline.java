@@ -102,6 +102,10 @@ public final class OnigiriPipeline implements AutoCloseable {
 
 	private int emptyVao;
 	private boolean attachmentsLogged;
+	private boolean compositePixelLogged;
+	private int checkedColor = -1;
+	private int checkedDepth = -1;
+	private boolean gameTexturesUsable;
 	private boolean initialised;
 	private boolean disposed;
 
@@ -280,6 +284,16 @@ public final class OnigiriPipeline implements AutoCloseable {
 			return;
 		}
 
+		// A game texture that cannot be sampled as 2D reads back as black, and
+		// blitting that over the game image is how a working pipeline produces a
+		// black screen. Skip the frame instead: vanilla output beats black.
+		// Re-checked whenever the ids change, since the game reallocates its
+		// targets on resize and resource reload.
+		if (!gameTexturesOk(gameColor, gameDepth)) {
+			frame.requestHistoryReset();
+			return;
+		}
+
 		// Effects sample and write colour; blending and depth are done in-shader.
 		GL11.glDisable(GL11.GL_DEPTH_TEST);
 		GL11.glDisable(GL11.GL_BLEND);
@@ -299,6 +313,7 @@ public final class OnigiriPipeline implements AutoCloseable {
 		resolveTemporal(shadowTarget, shadowHistory, gameDepth);
 
 		runCompositePass(gameDepth, gameColor);
+		logCompositePixelOnce();
 		blitToGame(gameColor);
 
 		frame.resetHistory = false;
@@ -312,6 +327,56 @@ public final class OnigiriPipeline implements AutoCloseable {
 		GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
 		GL11.glDepthMask(true);
 		GL11.glEnable(GL11.GL_DEPTH_TEST);
+	}
+
+	/**
+	 * Re-validates the game textures when their ids change.
+	 *
+	 * <p>Cached per id pair so the probe - which touches GL state - runs once per
+	 * target allocation rather than once per frame.
+	 */
+	private boolean gameTexturesOk(int gameColor, int gameDepth) {
+		if (gameColor == checkedColor && gameDepth == checkedDepth) {
+			return gameTexturesUsable;
+		}
+
+		checkedColor = gameColor;
+		checkedDepth = gameDepth;
+		gameTexturesUsable = dev.onigiri.gl.GameTarget.ensureSampleable(gameColor, gameDepth);
+		return gameTexturesUsable;
+	}
+
+	/**
+	 * Reads back the centre pixel of the composite target, once.
+	 *
+	 * <p>The discriminator for the next "black screen" report: if this pixel is
+	 * black, the passes themselves produce black (matrices, uniforms, samplers);
+	 * if it is not, the chain works and the blit is what loses the image. Either
+	 * way the log then says which half to look at instead of leaving it a guess.
+	 */
+	private void logCompositePixelOnce() {
+		if (compositePixelLogged) {
+			return;
+		}
+
+		compositePixelLogged = true;
+
+		java.nio.ByteBuffer pixel = org.lwjgl.system.MemoryUtil.memAlloc(4);
+
+		try {
+			GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, compositeTarget.framebufferId());
+			GL11.glReadPixels(compositeTarget.width() / 2, compositeTarget.height() / 2,
+					1, 1, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, pixel);
+			GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+
+			LOGGER.info("Composite centre pixel: r={} g={} b={} a={}",
+					pixel.get(0) & 0xFF, pixel.get(1) & 0xFF,
+					pixel.get(2) & 0xFF, pixel.get(3) & 0xFF);
+		} catch (RuntimeException | LinkageError e) {
+			LOGGER.warn("Could not read back the composite pixel: {}", e.toString());
+		} finally {
+			org.lwjgl.system.MemoryUtil.memFree(pixel);
+		}
 	}
 
 	/**

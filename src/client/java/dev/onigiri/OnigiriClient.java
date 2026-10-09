@@ -26,7 +26,7 @@ import dev.onigiri.pipeline.LightingModel;
 import dev.onigiri.pipeline.OnigiriPipeline;
 import dev.onigiri.pipeline.ProjectionModel;
 import dev.onigiri.ui.OnigiriScreen;
-import dev.onigiri.ui.VideoSettingsHook;
+import dev.onigiri.ui.OptionsScreenHook;
 
 /**
  * Mod entrypoint and render hook.
@@ -85,14 +85,15 @@ public class OnigiriClient implements ClientModInitializer {
 		ClientTickEvents.END_CLIENT_TICK.register(this::onClientTick);
 		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> shutdown());
 
-		// Also reachable from Options > Video, so the settings do not require
-		// knowing the hotkey.
-		VideoSettingsHook.register();
+		// Also reachable from the Options screen itself, so the settings do not
+		// require knowing the hotkey.
+		OptionsScreenHook.register();
 
 		// On a phone there may be no F6 key at all - Pojav exposes an on-screen
 		// keyboard, and most sessions never open it. The hotkey is a convenience
 		// for anyone with a bluetooth keyboard; the reliable route on a touch
-		// device is Options > Video > Onigiri..., which is why that button exists.
+		// device is the Onigiri button on the Options screen, which is why that
+		// button exists.
 		//
 		// The active texture and attachment ids are logged on the first rendered
 		// frame because the "no visible effect" failure is otherwise silent.

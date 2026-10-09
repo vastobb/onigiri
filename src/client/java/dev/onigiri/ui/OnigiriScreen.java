@@ -26,12 +26,16 @@ import dev.onigiri.OnigiriClient;
 import dev.onigiri.OnigiriConfig;
 
 /**
- * The in-game settings menu, opened from the keybind or from Video Settings.
+ * The in-game settings menu.
  *
- * <p>Laid out as a single centred column with explicit bounds, matching the
- * shape of Minecraft's own settings screens. Every widget is registered with
- * {@code addRenderableWidget} rather than routed through a layout object, because
- * that is the arrangement verified working on the target device.
+ * <p>Laid out in two columns with explicit bounds. A single column of fourteen
+ * rows does not fit a phone in landscape - the tail falls off the bottom of a
+ * 300-pixel-tall screen with no way to reach it, because {@code Screen} in 26.3
+ * exposes no scroll hook to override. Two columns of seven fit instead.
+ *
+ * <p>Every widget is registered with {@code addRenderableWidget} rather than
+ * routed through a layout object, because that is the arrangement verified
+ * working on the target device.
  *
  * <p>Two 26.3 API details that are easy to get wrong and were verified against
  * the jar rather than assumed:
@@ -47,10 +51,9 @@ import dev.onigiri.OnigiriConfig;
  * the effect of a change is visible while the menu is still open.
  */
 public final class OnigiriScreen extends Screen {
-	private static final int CONTENT_WIDTH = 260;
+	private static final int COLUMN_WIDTH = 250;
 	private static final int ROW_HEIGHT = 20;
-	private static final int GAP = 4;
-	private static final int SECTION_GAP = 10;
+	private static final int GAP = 3;
 
 	private static final List<String> QUALITY_NAMES = List.of("Potato", "Mobile", "Balanced", "Ultra");
 	private static final List<String> SCALE_NAMES = List.of("0.5x", "0.75x", "1.0x");
@@ -87,54 +90,66 @@ public final class OnigiriScreen extends Screen {
 
 	@Override
 	protected void init() {
-		// Every widget is placed with explicit bounds and registered with
-		// addRenderableWidget. An earlier version routed them through
-		// HeaderAndFooterLayout, which is how Minecraft's own options screens are
-		// built - but getting the layout itself drawn requires knowing how it
-		// registers its children, and guessing at it produced a screen that
-		// opened blank. This is the arrangement that is known to work on the
-		// target device.
-		int left = Math.max(4, (width - CONTENT_WIDTH) / 2);
-		int y = Math.max(38, height / 2 - 108);
+		int top = Math.max(36, height / 2 - 96);
 
-		y = section(left, y, "EFFECTS");
-		y = toggle(left, y, "Ambient occlusion", () -> config.ambientOcclusion,
-				v -> config.ambientOcclusion = v);
-		y = toggle(left, y, "Sun shadows", () -> config.shadows,
-				v -> config.shadows = v);
-		y = toggle(left, y, "Reflections", () -> config.reflections,
-				v -> config.reflections = v);
-		y = toggle(left, y, "Specular highlights", () -> config.specularStrength > 0.001f,
-				v -> config.specularStrength = v ? 0.6f : 0.0f);
+		if (width >= COLUMN_WIDTH * 2 + 20) {
+			int leftX = width / 2 - COLUMN_WIDTH - 5;
+			int rightX = width / 2 + 5;
 
-		y += SECTION_GAP;
-		y = section(left, y, "PERFORMANCE");
-		y = choice(left, y, "Quality", QUALITY_NAMES, config::qualityName,
-				v -> config.quality = QUALITY_NAMES.indexOf(v));
-		y = choice(left, y, "Effect resolution", SCALE_NAMES, this::currentScale,
-				v -> config.resolutionScale = parseScale(v));
-		y = toggle(left, y, "Half resolution", () -> config.halfResolution,
-				v -> config.halfResolution = v);
-		y = slider(left, y, "Exposure", 0.6, 1.6, config.exposure,
-				v -> String.format("%.2f", v), v -> config.exposure = v.floatValue());
-		y = slider(left, y, "Temporal feedback", 0.5, 0.97, config.temporalFeedback,
-				v -> String.format("%.2f", v), v -> config.temporalFeedback = v.floatValue());
+			int y = top;
+			y = section(leftX, y, "EFFECTS");
+			y = toggle(leftX, y, "Ambient occlusion", () -> config.ambientOcclusion,
+					v -> config.ambientOcclusion = v);
+			y = toggle(leftX, y, "Sun shadows", () -> config.shadows,
+					v -> config.shadows = v);
+			y = toggle(leftX, y, "Reflections", () -> config.reflections,
+					v -> config.reflections = v);
+			y = choice(leftX, y, "Quality", QUALITY_NAMES, config::qualityName,
+					v -> config.quality = QUALITY_NAMES.indexOf(v));
+			y = choice(leftX, y, "Effect resolution", SCALE_NAMES, this::currentScale,
+					v -> config.resolutionScale = parseScale(v));
+			y = toggle(leftX, y, "Half resolution", () -> config.halfResolution,
+					v -> config.halfResolution = v);
 
-		y += SECTION_GAP;
-		y = section(left, y, "INTENSITY");
-		y = slider(left, y, "Occlusion strength", 0.0, 1.0, config.aoStrength,
-				v -> String.format("%.2f", v), v -> config.aoStrength = v.floatValue());
-		y = slider(left, y, "Shadow strength", 0.0, 1.0, config.shadowStrength,
-				v -> String.format("%.2f", v), v -> config.shadowStrength = v.floatValue());
-		y = slider(left, y, "Reflection strength", 0.0, 1.5, config.ssrStrength,
-				v -> String.format("%.2f", v), v -> config.ssrStrength = v.floatValue());
-		y = slider(left, y, "Saturation", 0.0, 1.6, config.saturation,
-				v -> String.format("%.2f", v), v -> config.saturation = v.floatValue());
+			y = top;
+			y = section(rightX, y, "LOOK");
+			y = slider(rightX, y, "Exposure", 0.6, 1.6, config.exposure,
+					v -> String.format("%.2f", v), v -> config.exposure = v.floatValue());
+			y = slider(rightX, y, "Temporal feedback", 0.5, 0.97, config.temporalFeedback,
+					v -> String.format("%.2f", v), v -> config.temporalFeedback = v.floatValue());
+			y = slider(rightX, y, "Occlusion", 0.0, 1.0, config.aoStrength,
+					v -> String.format("%.2f", v), v -> config.aoStrength = v.floatValue());
+			y = slider(rightX, y, "Shadow strength", 0.0, 1.0, config.shadowStrength,
+					v -> String.format("%.2f", v), v -> config.shadowStrength = v.floatValue());
+			y = slider(rightX, y, "Reflections", 0.0, 1.5, config.ssrStrength,
+					v -> String.format("%.2f", v), v -> config.ssrStrength = v.floatValue());
+			y = slider(rightX, y, "Saturation", 0.0, 1.6, config.saturation,
+					v -> String.format("%.2f", v), v -> config.saturation = v.floatValue());
+			y = slider(rightX, y, "Specular", 0.0, 1.5, config.specularStrength,
+					v -> String.format("%.2f", v), v -> config.specularStrength = v.floatValue());
+		} else {
+			// Narrow screen (portrait phone, small window): a single centred
+			// column. The tail may not fit, but the Done button below always does.
+			int left = Math.max(4, (width - COLUMN_WIDTH) / 2);
+			int y = top;
 
-		// Footer, pinned to the bottom so it is always reachable however short the
-		// screen is.
+			y = toggle(left, y, "Ambient occlusion", () -> config.ambientOcclusion,
+					v -> config.ambientOcclusion = v);
+			y = toggle(left, y, "Sun shadows", () -> config.shadows,
+					v -> config.shadows = v);
+			y = toggle(left, y, "Reflections", () -> config.reflections,
+					v -> config.reflections = v);
+			y = choice(left, y, "Quality", QUALITY_NAMES, config::qualityName,
+					v -> config.quality = QUALITY_NAMES.indexOf(v));
+			y = slider(left, y, "Exposure", 0.6, 1.6, config.exposure,
+					v -> String.format("%.2f", v), v -> config.exposure = v.floatValue());
+		}
+
+		// Done, centred and pinned to the bottom so it is always reachable
+		// however short the screen is.
+		int doneWidth = Math.min(200, width - 8);
 		addRenderableWidget(Button.builder(Component.literal("Done"), button -> onClose())
-				.bounds(left, height - ROW_HEIGHT - 24, CONTENT_WIDTH, ROW_HEIGHT)
+				.bounds((width - doneWidth) / 2, height - ROW_HEIGHT - 22, doneWidth, ROW_HEIGHT)
 				.build());
 	}
 
@@ -153,17 +168,17 @@ public final class OnigiriScreen extends Screen {
 	}
 
 	/** A dim section heading. */
-	private int section(int left, int y, String text) {
-		StringWidget heading = new StringWidget(left, y,
+	private int section(int x, int y, String text) {
+		StringWidget heading = new StringWidget(x, y,
 				Component.literal(text).withStyle(ChatFormatting.GRAY), font);
 
-		heading.setMaxWidth(CONTENT_WIDTH);
+		heading.setMaxWidth(COLUMN_WIDTH);
 		addRenderableWidget(heading);
 
-		return y + ROW_HEIGHT - 8;
+		return y + ROW_HEIGHT - 6;
 	}
 
-	private int choice(int left, int y, String label, List<String> values,
+	private int choice(int x, int y, String label, List<String> values,
 					   Supplier<String> current, Consumer<String> apply) {
 		// The type witness is required, not decorative: CycleButton declares both
 		// builder(Function, Supplier<T>) and builder(Function, T), and with T
@@ -172,7 +187,7 @@ public final class OnigiriScreen extends Screen {
 		addRenderableWidget(CycleButton.<String>builder(value -> Component.literal(value), current)
 				.withValues(values)
 				.displayOnlyValue()
-				.create(left, y, CONTENT_WIDTH, ROW_HEIGHT,
+				.create(x, y, COLUMN_WIDTH, ROW_HEIGHT,
 						Component.literal(label),
 						(button, value) -> {
 							apply.accept(value);
@@ -182,7 +197,7 @@ public final class OnigiriScreen extends Screen {
 		return y + ROW_HEIGHT + GAP;
 	}
 
-	private int toggle(int left, int y, String label,
+	private int toggle(int x, int y, String label,
 					   BooleanSupplier getter, Consumer<Boolean> setter) {
 		addRenderableWidget(CycleButton.<Boolean>builder(
 						on -> Component.literal(on ? "On" : "Off").withStyle(
@@ -190,7 +205,7 @@ public final class OnigiriScreen extends Screen {
 						getter::getAsBoolean)
 				.withValues(List.of(Boolean.FALSE, Boolean.TRUE))
 				.displayOnlyValue()
-				.create(left, y, CONTENT_WIDTH, ROW_HEIGHT,
+				.create(x, y, COLUMN_WIDTH, ROW_HEIGHT,
 						Component.literal(label),
 						(button, value) -> {
 							setter.accept(value);
@@ -200,9 +215,9 @@ public final class OnigiriScreen extends Screen {
 		return y + ROW_HEIGHT + GAP;
 	}
 
-	private int slider(int left, int y, String label, double min, double max, double value,
+	private int slider(int x, int y, String label, double min, double max, double value,
 					   Function<Double, String> format, Consumer<Double> apply) {
-		addRenderableWidget(new SettingSlider(left, y, CONTENT_WIDTH, ROW_HEIGHT, label,
+		addRenderableWidget(new SettingSlider(x, y, COLUMN_WIDTH, ROW_HEIGHT, label,
 				min, max, value, format, apply::accept));
 
 		return y + ROW_HEIGHT + GAP;
@@ -229,8 +244,10 @@ public final class OnigiriScreen extends Screen {
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
 		super.extractRenderState(graphics, mouseX, mouseY, partialTick);
 
+		graphics.centeredText(font, title, width / 2, Math.max(10, height / 2 - 118), 0xFFFFFFFF);
+
 		OnigiriClient client = OnigiriClient.instance();
-		int y = height - 46;
+		int y = height - 44;
 
 		if (client == null) {
 			return;
