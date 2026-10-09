@@ -103,8 +103,8 @@ public final class GlCaps {
 
 	private static boolean hasExtension(String name) {
 		try {
-			return org.lwjgl.opengl.GL30.glGetString(GL30.GL_EXTENSIONS) != null
-					&& org.lwjgl.opengl.GL30.glGetString(GL30.GL_EXTENSIONS).contains(name);
+			String extensions = org.lwjgl.opengl.GL30.glGetString(GL30.GL_EXTENSIONS);
+			return extensions != null && extensions.contains(name);
 		} catch (RuntimeException | LinkageError e) {
 			return false;
 		}

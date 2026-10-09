@@ -15,7 +15,6 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
-import net.minecraft.resources.Identifier;
 
 import com.mojang.blaze3d.platform.InputConstants;
 
@@ -49,9 +48,6 @@ public final class OnigiriScreen extends Screen {
 	private static final int SPACING = 4;
 	private static final int TOP_MARGIN = 34;
 
-	private static final KeyMapping.Category CATEGORY = KeyMapping.Category.register(
-			Identifier.fromNamespaceAndPath(OnigiriClient.MOD_ID, "category"));
-
 	private static final List<String> QUALITY_NAMES = List.of("Potato", "Mobile", "Balanced", "Ultra");
 
 	private final Screen parent;
@@ -72,13 +68,21 @@ public final class OnigiriScreen extends Screen {
 				: OnigiriConfig.get();
 	}
 
-	/** Registers the keybind that opens this menu. Called from the entrypoint. */
-	public static KeyMapping registerMenuKey() {
+	/**
+	 * Registers the keybind that opens this menu. Called from the entrypoint.
+	 *
+	 * <p>The category is passed in rather than created here.
+	 * {@code KeyMapping.Category.register} throws if the same identifier is
+	 * registered twice, and a static initialiser in this class ran before the
+	 * entrypoint's own registration - so owning it in exactly one place is the
+	 * only way it stays registered exactly once.
+	 */
+	public static KeyMapping registerMenuKey(KeyMapping.Category category) {
 		return KeyMappingHelper.registerKeyMapping(new KeyMapping(
 				"key.onigiri.menu",
 				InputConstants.Type.KEYBOARD,
 				SDLScancode.SDL_SCANCODE_F6,
-				CATEGORY));
+				category));
 	}
 
 	@Override

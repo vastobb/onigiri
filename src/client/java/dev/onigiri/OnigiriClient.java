@@ -61,10 +61,13 @@ public class OnigiriClient implements ClientModInitializer {
 
 		config = OnigiriConfig.load(FabricLoader.getInstance().getConfigDir());
 
+		// Registered here exactly once. KeyMapping.Category.register throws on a
+		// duplicate identifier, and the entrypoint is the only place that runs
+		// before any screen is constructed.
 		KeyMapping.Category category = KeyMapping.Category.register(
 				Identifier.fromNamespaceAndPath(MOD_ID, "category"));
 
-		menuKey = OnigiriScreen.registerMenuKey();
+		menuKey = OnigiriScreen.registerMenuKey(category);
 
 		toggleKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
 				"key.onigiri.toggle",
