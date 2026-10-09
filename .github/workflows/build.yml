@@ -86,14 +86,23 @@ jobs:
       # Only the mod jar is published. The sources jar is a build by-product,
       # and listing it next to the download invites players to put the wrong
       # file in their mods folder.
+      # Resolved here rather than with a negation glob: the action's `files`
+      # input did not honour the `!` pattern, and silently shipping the sources
+      # jar alongside the mod invites players to install the wrong file.
+      - name: Resolve mod jar
+        if: github.event_name == 'workflow_dispatch'
+        id: modjar
+        run: |
+          JAR=$(ls -1 build/libs/*.jar | grep -v -- '-sources' | head -1)
+          test -n "$JAR" || { echo "::error::no mod jar found"; exit 1; }
+          echo "path=$JAR" >> "$GITHUB_OUTPUT"
+
       - name: Create draft release
         if: github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: Build ${{ github.run_number }}
-          files: |
-            build/libs/*.jar
-            !build/libs/*-sources.jar
+          files: ${{ steps.modjar.outputs.path }}
           draft: true
           generate_release_notes: true
