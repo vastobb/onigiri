@@ -34,6 +34,14 @@ jobs:
         with:
           gradle-version: '9.7.0'
 
+      # Minecraft compiles its own shaders at runtime, so a GLSL error would
+      # otherwise only show up as a black screen on a player's machine.
+      - name: Validate GLSL shaders
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslang-tools
+          python3 tools/validate_shaders.py
+
       - name: Build mod jar
         run: gradle build --stacktrace
 

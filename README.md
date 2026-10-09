@@ -144,8 +144,14 @@ gradle build
 
 The jar lands in `build/libs/`.
 
-CI runs on every push and pull request and attaches each successful build to a
-draft release.
+Shaders can be checked without a GPU or a running game:
+
+```sh
+# needs glslangValidator: apt install glslang-tools
+python3 tools/validate_shaders.py
+```
+
+CI does both on every push and pull request.
 
 ## Design notes
 
