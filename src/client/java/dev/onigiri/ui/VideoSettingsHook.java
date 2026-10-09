@@ -26,13 +26,13 @@ import dev.onigiri.OnigiriClient;
  *
  * <p>The button goes into the screen's own {@link HeaderAndFooterLayout} footer
  * so it lines up with the vanilla Done button instead of overlapping the option
- * list. That layout field is private, so it is reached reflectively - and if that
- * ever fails, the button falls back to absolute bounds in the same strip rather
- * than not appearing at all.
+ * list. That layout field is private, so it is reached reflectively.
  */
 public final class VideoSettingsHook {
 	private static final int BUTTON_WIDTH = 110;
 	private static final int BUTTON_HEIGHT = 20;
+
+	private static boolean logged;
 
 	private VideoSettingsHook() {
 	}
@@ -82,6 +82,18 @@ public final class VideoSettingsHook {
 							.bounds(0, 0, BUTTON_WIDTH, BUTTON_HEIGHT)
 							.build(),
 					settings -> settings.alignHorizontallyRight().paddingRight(4));
+
+			// AFTER_INIT fires after the screen has already arranged its layout,
+			// so a button added here is positioned at (0,0) and never placed
+			// until something re-arranges. Without this call the button exists
+			// but sits unpositioned - which is why Video Settings showed no
+			// Onigiri entry even though the hook ran without errors.
+			footer.arrangeElements();
+
+			if (!logged) {
+				logged = true;
+				OnigiriClient.LOGGER.info("Added the Onigiri button to Video Settings");
+			}
 		} catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
 			OnigiriClient.LOGGER.warn("Could not add the Onigiri button to Video Settings: {}",
 					e.toString());

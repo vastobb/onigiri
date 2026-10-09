@@ -1,7 +1,6 @@
 package dev.onigiri.pipeline;
 
 import dev.onigiri.OnigiriConfig;
-import dev.onigiri.gl.FramebufferAccess;
 import dev.onigiri.gl.GlCaps;
 import dev.onigiri.gl.RenderTarget;
 import dev.onigiri.gl.ShaderProgram;
@@ -70,6 +69,25 @@ public final class OnigiriPipeline implements AutoCloseable {
 	private RenderTarget ssrTarget;
 	private RenderTarget shadowTarget;
 
+	/**
+	 * Full-resolution target the composite pass draws into.
+	 *
+	 * <p>Drawing the relit image straight into the game's colour texture is not
+	 * an option: that texture is also bound as the {@code uColor} sampler for
+	 * the same draw, and sampling a texture that is attached to the draw
+	 * framebuffer is a feedback loop, which is undefined behaviour in GL. The
+	 * composite therefore renders here, and the result is blitted across.
+	 */
+	private RenderTarget compositeTarget;
+
+	/**
+	 * Scratch framebuffer used to blit the composite result into the game's
+	 * colour texture. The game's texture is attached to this on every frame
+	 * rather than cached, because the game reallocates its targets on resize
+	 * and resource reload.
+	 */
+	private int blitFbo;
+
 	private TemporalPair aoHistory;
 	private TemporalPair ssrHistory;
 	private TemporalPair shadowHistory;
@@ -122,6 +140,8 @@ public final class OnigiriPipeline implements AutoCloseable {
 		emptyVao = GL30.glGenVertexArrays();
 		GL30.glBindVertexArray(emptyVao);
 
+		blitFbo = GL30.glGenFramebuffers();
+
 		computeEffectSize();
 		allocateTargets();
 
@@ -142,6 +162,7 @@ public final class OnigiriPipeline implements AutoCloseable {
 
 	private void allocateTargets() {
 		normalDepth = new RenderTarget(width, height);
+		compositeTarget = new RenderTarget(width, height);
 
 		aoTarget = new RenderTarget(effectWidth, effectHeight);
 		ssrTarget = new RenderTarget(effectWidth, effectHeight);
@@ -172,6 +193,7 @@ public final class OnigiriPipeline implements AutoCloseable {
 		computeEffectSize();
 
 		normalDepth.resize(width, height);
+		compositeTarget.resize(width, height);
 		aoTarget.resize(effectWidth, effectHeight);
 		ssrTarget.resize(effectWidth, effectHeight);
 		shadowTarget.resize(effectWidth, effectHeight);
@@ -214,47 +236,46 @@ public final class OnigiriPipeline implements AutoCloseable {
 	}
 
 	/**
-	 * Logs, once, what the game actually had bound when the render hook fired.
+	 * Logs, once, which game textures the chain is reading and writing.
 	 *
 	 * <p>This exists because the failure mode here is silent by design: when the
-	 * world is not in a sampleable framebuffer the frame is skipped, the game
-	 * looks like plain vanilla, and the log says nothing at all. That is exactly
-	 * what happened on the first real Android run - the pipeline initialised
-	 * cleanly, then quietly did nothing every frame. One log line turns that
+	 * game textures cannot be resolved the frame is skipped, the game looks like
+	 * plain vanilla, and the log says nothing at all. One log line turns that
 	 * from a mystery into a diagnosis.
 	 */
-	private void logAttachmentsOnce(int colorTexture, int depthTexture) {
+	private void logGameTargetOnce(int gameColor, int gameDepth) {
 		if (attachmentsLogged) {
 			return;
 		}
 
 		attachmentsLogged = true;
 
-		LOGGER.info("First frame: draw FBO {}, colour attachment {}, depth attachment {}",
-				FramebufferAccess.boundFramebuffer(), colorTexture, depthTexture);
+		LOGGER.info("First frame: game colour texture {}, game depth texture {}",
+				gameColor, gameDepth);
 
-		if (colorTexture == 0 || depthTexture == 0) {
-			LOGGER.warn("The world's framebuffer is not sampleable - post-processing is being skipped. "
-					+ "FBO={} colour={} depth={}. A renderbuffer depth attachment (common with MSAA) "
-					+ "cannot be read; vanilla MC or disabling MSAA may help.",
-					FramebufferAccess.boundFramebuffer(), colorTexture, depthTexture);
+		if (gameColor == 0 || gameDepth == 0) {
+			LOGGER.warn("The game's render target is not readable - post-processing is being skipped. "
+					+ "colour={} depth={}.", gameColor, gameDepth);
 		}
 	}
 
-	/** Runs one frame. The caller must already have the world in the main FBO. */
-	public void render() {
+	/**
+	 * Runs one frame.
+	 *
+	 * @param gameColor the GL id of the game's colour texture, from its main
+	 *                  render target - the image the world has been drawn into
+	 * @param gameDepth the GL id of the game's depth texture
+	 */
+	public void render(int gameColor, int gameDepth) {
 		if (!initialised) {
 			return;
 		}
 
-		int colorTexture = FramebufferAccess.boundColorTexture();
-		int depthTexture = FramebufferAccess.boundDepthTexture();
+		logGameTargetOnce(gameColor, gameDepth);
 
-		logAttachmentsOnce(colorTexture, depthTexture);
-
-		// The default framebuffer is not sampleable, so there is nothing to read
-		// from. Drop history and let the next frame try again.
-		if (depthTexture == 0 || colorTexture == 0) {
+		// Without both game textures there is nothing to read from. Drop history
+		// and let the next frame try again.
+		if (gameColor == 0 || gameDepth == 0) {
 			frame.requestHistoryReset();
 			return;
 		}
@@ -263,30 +284,56 @@ public final class OnigiriPipeline implements AutoCloseable {
 		GL11.glDisable(GL11.GL_DEPTH_TEST);
 		GL11.glDisable(GL11.GL_BLEND);
 		GL11.glDisable(GL11.GL_CULL_FACE);
+		GL11.glDisable(GL11.GL_SCISSOR_TEST);
 		GL30.glBindVertexArray(emptyVao);
 
 		// Matrices are already built and inverted by ProjectionModel. Nothing here
 		// touches them.
-		runGeometryPass(depthTexture);
-		runAoPass(depthTexture);
-		runSsrPass(depthTexture, colorTexture);
-		runShadowPass(depthTexture);
+		runGeometryPass(gameDepth);
+		runAoPass(gameDepth);
+		runSsrPass(gameDepth, gameColor);
+		runShadowPass(gameDepth);
 
-		resolveTemporal(aoTarget, aoHistory, depthTexture);
-		resolveTemporal(ssrTarget, ssrHistory, depthTexture);
-		resolveTemporal(shadowTarget, shadowHistory, depthTexture);
+		resolveTemporal(aoTarget, aoHistory, gameDepth);
+		resolveTemporal(ssrTarget, ssrHistory, gameDepth);
+		resolveTemporal(shadowTarget, shadowHistory, gameDepth);
 
-		runCompositePass(depthTexture, colorTexture);
+		runCompositePass(gameDepth, gameColor);
+		blitToGame(gameColor);
 
 		frame.resetHistory = false;
 		frame.advanceFrame(frame.time);
 
 		unbindTextures();
 
-		// Leave the game the state it expects for the HUD.
+		// Leave the game the state it expects for whatever renders next. FBO 0 was
+		// bound on entry (the world lives in GPU textures, not a bound
+		// framebuffer, on this path), so that is what is restored.
 		GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
 		GL11.glDepthMask(true);
 		GL11.glEnable(GL11.GL_DEPTH_TEST);
+	}
+
+	/**
+	 * Copies the relit image over the game's colour texture.
+	 *
+	 * <p>A blit rather than a draw: the composite target and the game texture are
+	 * the same size, so this is a straight GPU-side copy with no shader, no
+	 * sampler and no feedback loop. NEAREST because this is a copy, not a scale.
+	 */
+	private void blitToGame(int gameColor) {
+		GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, compositeTarget.framebufferId());
+		GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, blitFbo);
+		GL30.glFramebufferTexture2D(
+				GL30.GL_DRAW_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0,
+				GL30.GL_TEXTURE_2D, gameColor, 0);
+
+		GL30.glBlitFramebuffer(
+				0, 0, compositeTarget.width(), compositeTarget.height(),
+				0, 0, compositeTarget.width(), compositeTarget.height(),
+				GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
+
+		GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
 	}
 
 	/** Uniforms shared by every pass that includes {@code common.glsl}. */
@@ -426,10 +473,16 @@ public final class OnigiriPipeline implements AutoCloseable {
 		pair.swap();
 	}
 
-	/** Pass 6: relight, fog and tonemap into the default framebuffer. */
+	/**
+	 * Pass 6: relight, fog and tonemap into the composite target.
+	 *
+	 * <p>Into our own target, not the game's: the game's colour texture is bound
+	 * as the {@code uColor} sampler for this same draw, and sampling a texture
+	 * attached to the draw framebuffer is a feedback loop. {@link #blitToGame}
+	 * copies the result across afterwards.
+	 */
 	private void runCompositePass(int depthTexture, int colorTexture) {
-		GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
-		GL11.glViewport(0, 0, width, height);
+		compositeTarget.bindForDrawing();
 
 		compositeShader.bind();
 		applyCommon(compositeShader, depthTexture, colorTexture);
@@ -513,6 +566,7 @@ public final class OnigiriPipeline implements AutoCloseable {
 		closeQuietly(compositeShader);
 
 		closeQuietly(normalDepth);
+		closeQuietly(compositeTarget);
 		closeQuietly(aoTarget);
 		closeQuietly(ssrTarget);
 		closeQuietly(shadowTarget);
@@ -523,6 +577,11 @@ public final class OnigiriPipeline implements AutoCloseable {
 		if (emptyVao != 0) {
 			GL30.glDeleteVertexArrays(emptyVao);
 			emptyVao = 0;
+		}
+
+		if (blitFbo != 0) {
+			GL30.glDeleteFramebuffers(blitFbo);
+			blitFbo = 0;
 		}
 
 		initialised = false;

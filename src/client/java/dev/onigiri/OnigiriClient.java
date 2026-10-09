@@ -19,6 +19,7 @@ import net.minecraft.resources.Identifier;
 
 import org.lwjgl.sdl.SDLScancode;
 
+import dev.onigiri.gl.GameTarget;
 import dev.onigiri.gl.GlCaps;
 import dev.onigiri.pipeline.FrameState;
 import dev.onigiri.pipeline.LightingModel;
@@ -145,7 +146,7 @@ public class OnigiriClient implements ClientModInitializer {
 		}
 
 		try {
-			renderFrame(client);
+			renderFrame(client, context);
 			consecutiveFailures = 0;
 		} catch (RuntimeException | LinkageError e) {
 			consecutiveFailures++;
@@ -180,7 +181,7 @@ public class OnigiriClient implements ClientModInitializer {
 		}
 	}
 
-	private void renderFrame(Minecraft client) {
+	private void renderFrame(Minecraft client, LevelRenderContext context) {
 		int width = client.getWindow().getWidth();
 		int height = client.getWindow().getHeight();
 
@@ -191,6 +192,17 @@ public class OnigiriClient implements ClientModInitializer {
 		ensurePipeline(width, height);
 
 		if (!pipelineReady) {
+			return;
+		}
+
+		// The world's colour and depth come from the game's main render target,
+		// not from the bound framebuffer: on this path the bound draw framebuffer
+		// at END_MAIN is 0 while the world sits in GPU textures. Reading the bound
+		// framebuffer was the entire "no shaders" report - every frame skipped.
+		int[] game = GameTarget.resolve(context);
+
+		if (game == null) {
+			pipeline.frame().requestHistoryReset();
 			return;
 		}
 
@@ -210,7 +222,7 @@ public class OnigiriClient implements ClientModInitializer {
 			return;
 		}
 
-		pipeline.render();
+		pipeline.render(game[0], game[1]);
 	}
 
 	private void ensurePipeline(int width, int height) {

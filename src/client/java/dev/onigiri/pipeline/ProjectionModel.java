@@ -54,6 +54,9 @@ public final class ProjectionModel {
 
 	private static final Matrix4f SCRATCH_VIEW = new Matrix4f();
 
+	/** Scratch for the camera-to-world matrix, inverted into the view. */
+	private static final Matrix4f SCRATCH_WORLD = new Matrix4f();
+
 	/** Scratch for the direction transform, so the render loop stays allocation-free. */
 	private static final Vector4f SCRATCH_DIRECTION = new Vector4f();
 
@@ -327,9 +330,21 @@ public final class ProjectionModel {
 	/**
 	 * Builds the view matrix from the camera basis.
 	 *
-	 * <p>Yaw is applied before pitch, matching vanilla. View space looks down -Z,
-	 * hence the negated forward column. Written into {@code out} rather than
-	 * allocated so the render loop stays garbage-free.
+	 * <p>Vanilla convention, verified against the game's own angle mapping: yaw 0
+	 * faces +Z (south), yaw 90 faces -X (west), positive pitch looks down. That
+	 * gives forward = (-sinYaw·cosPitch, -sinPitch, cosYaw·cosPitch), right =
+	 * (-cosYaw, 0, -sinYaw) - facing south, the right hand points west - and up
+	 * = (-sinYaw·sinPitch, cosPitch, cosYaw·sinPitch). The three are orthonormal
+	 * and right-handed (right × up = back), which was checked numerically rather
+	 * than assumed: the previous basis pointed down at level pitch and used the
+	 * forward vector where right belonged.
+	 *
+	 * <p>The view is built by inverting the camera-to-world matrix (columns are
+	 * right, up, back, eye) rather than by hand-assembling the inverse. A rigid
+	 * transform inverts exactly, so there is no room for a transposed rotation or
+	 * a mistranslated eye - both of which the previous version had, setting the
+	 * translation to +eye instead of the rotated -eye. Written into {@code out}
+	 * (via the shared scratch) so the render loop stays garbage-free.
 	 */
 	private static void viewMatrix(FrameState frame, Matrix4f out) {
 		float yaw = (float) Math.toRadians(frame.cameraYaw);
@@ -340,30 +355,27 @@ public final class ProjectionModel {
 		float sinPitch = (float) Math.sin(pitch);
 		float cosPitch = (float) Math.cos(pitch);
 
-		// Camera basis vectors.
-		float rightX = -sinYaw;
+		float rightX = -cosYaw;
 		float rightY = 0.0f;
-		float rightZ = cosYaw;
+		float rightZ = -sinYaw;
 
-		float upX = sinYaw * cosPitch;
+		float upX = -sinYaw * sinPitch;
 		float upY = cosPitch;
-		float upZ = -cosYaw * cosPitch;
+		float upZ = cosYaw * sinPitch;
 
-		float fwdX = sinYaw * sinPitch;
-		float fwdY = -cosPitch;
-		float fwdZ = -cosYaw * sinPitch;
+		float backX = sinYaw * cosPitch;
+		float backY = sinPitch;
+		float backZ = -cosYaw * cosPitch;
 
-		out.identity();
-		out.set(
+		// Camera-to-world: basis vectors as columns, eye as translation.
+		// JOML's set() takes columns, so this reads as four column vectors.
+		SCRATCH_WORLD.set(
 				rightX, rightY, rightZ, 0.0f,
 				upX, upY, upZ, 0.0f,
-				-fwdX, -fwdY, -fwdZ, 0.0f,
-				0.0f, 0.0f, 0.0f, 1.0f);
+				backX, backY, backZ, 0.0f,
+				frame.cameraPos.x, frame.cameraPos.y, frame.cameraPos.z, 1.0f);
 
-		// Camera transform: rotate by the inverse basis, then translate by -eye.
-		out.m30(frame.cameraPos.x);
-		out.m31(frame.cameraPos.y);
-		out.m32(frame.cameraPos.z);
+		out.set(SCRATCH_WORLD).invert();
 	}
 
 	/** True when no component is NaN or infinite. */
