@@ -65,14 +65,18 @@ public final class OnigiriScreen extends Screen {
 		super(Component.literal("Onigiri"));
 
 		this.parent = parent;
-		this.config = OnigiriClient.config();
+
+		OnigiriClient client = OnigiriClient.instance();
+		this.config = client != null && client.config() != null
+				? client.config()
+				: OnigiriConfig.get();
 	}
 
 	/** Registers the keybind that opens this menu. Called from the entrypoint. */
 	public static KeyMapping registerMenuKey() {
 		return KeyMappingHelper.registerKeyMapping(new KeyMapping(
 				"key.onigiri.menu",
-				InputConstants.Type.KEYSYM,
+				InputConstants.Type.KEYBOARD,
 				SDLScancode.SDL_SCANCODE_F6,
 				CATEGORY));
 	}
@@ -190,7 +194,7 @@ public final class OnigiriScreen extends Screen {
 		return addChoice(left, y, Component.literal(label),
 				value -> Component.literal(value ? "On" : "Off"),
 				values,
-				getter::get,
+				getter::getAsBoolean,
 				value -> setter.accept(value));
 	}
 

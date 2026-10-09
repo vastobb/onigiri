@@ -68,7 +68,7 @@ public class OnigiriClient implements ClientModInitializer {
 
 		toggleKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
 				"key.onigiri.toggle",
-				InputConstants.Type.KEYSYM,
+				InputConstants.Type.KEYBOARD,
 				SDLScancode.SDL_SCANCODE_F8,
 				category));
 
