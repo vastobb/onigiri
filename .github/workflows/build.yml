@@ -37,6 +37,9 @@ jobs:
       - name: Build mod jar
         run: gradle build --stacktrace
 
+      # Guards against a jar that compiles but cannot load. A client-side
+      # fabric.mod.json ships from processClientResources, not processResources,
+      # so an unconfigured build produces a jar with raw ${version} in it.
       - name: Verify jar contents
         run: |
           set -euo pipefail
@@ -44,8 +47,16 @@ jobs:
           echo "Built: $JAR"
           test -f "$JAR"
 
-          echo "--- fabric.mod.json ---"
-          unzip -p "$JAR" fabric.mod.json
+          MOD_JSON=$(unzip -p "$JAR" fabric.mod.json)
+          echo "$MOD_JSON"
+
+          if echo "$MOD_JSON" | grep -q '\${'; then
+            echo "::error::fabric.mod.json contains unsubstituted placeholders"
+            exit 1
+          fi
+
+          echo "$MOD_JSON" | grep -q '"minecraft": "~26.3"' \
+            || { echo "::error::wrong Minecraft version in fabric.mod.json"; exit 1; }
 
           echo "--- shader assets ---"
           unzip -l "$JAR" | grep -E '\.(frag|glsl|vert)$'
