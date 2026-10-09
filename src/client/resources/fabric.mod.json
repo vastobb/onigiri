@@ -3,7 +3,7 @@
 	"id": "onigiri",
 	"version": "${version}",
 	"name": "Onigiri",
-	"description": "A custom screen-space renderer for Minecraft: horizon-based occlusion, screen-space reflections, temporally accumulated shadows and a hand-written GGX lighting model.",
+	"description": "A custom screen-space renderer for Minecraft: horizon-based occlusion, screen-space reflections, temporally accumulated shadows and a hand-written GGX lighting model. Built for Android, where it reaches GL through MobileGlues.",
 	"authors": [
 		"vastobb"
 	],

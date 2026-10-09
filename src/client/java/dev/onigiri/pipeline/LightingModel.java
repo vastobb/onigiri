@@ -10,9 +10,9 @@ import net.minecraft.world.entity.Entity;
  *
  * <p>Sun direction and colour are recomputed every frame rather than read from
  * the renderer. Vanilla bakes its sky light into vertex colours during chunk
- * building, which means it cannot respond to time-of-day changes without a
- * full relight; recomputing here costs a few trig calls and gives smooth,
- * physically plausible lighting across a full day cycle.
+ * building, which means it cannot respond to time-of-day changes without a full
+ * relight; recomputing here costs a few trig calls and gives smooth lighting
+ * across a full day cycle.
  */
 public final class LightingModel {
 	private static final float DAY_LENGTH = 24000.0f;
@@ -27,21 +27,33 @@ public final class LightingModel {
 	 *                    instead of stepping at the tick rate
 	 */
 	public static void update(FrameState frame, Minecraft client, float partialTick) {
-		if (client.level == null) {
+		if (frame == null || client == null || client.level == null) {
 			return;
 		}
 
 		float timeOfDay = (client.level.getGameTime() % DAY_LENGTH + partialTick) / DAY_LENGTH;
 
 		// ---- sun direction --------------------------------------------------
-		// Vanilla's celestial angle: 0 ticks is sunrise, 6000 noon, 12000
-		// sunset, 18000 midnight. The slight Z tilt matches the game's arc.
+		// Vanilla's celestial angle: 0 ticks is sunrise, 6000 noon, 12000 sunset,
+		// 18000 midnight.
+		//
+		// The angle runs -90 at sunrise through 0 at noon. The sun therefore has
+		// to trace cos(angle) vertically, so elevation peaks at noon and dips
+		// below the horizon at midnight.
 		float celestialAngle = timeOfDay * 360.0f - 90.0f;
+		float radians = (float) Math.toRadians(celestialAngle);
 
-		float sin = (float) Math.cos(Math.toRadians(celestialAngle));
-		float cos = (float) Math.sin(Math.toRadians(celestialAngle));
+		// The earlier version stored cos(angle) in a variable named `sin` and
+		// sin(angle) in one named `cos`, then used them the other way round. The
+		// result was a sun that sat on the horizon at noon and at the zenith at
+		// sunset - daylight and darkness swapped by six hours. Naming them for
+		// what they hold is the cheapest guard against that recurring.
+		float cosAngle = (float) Math.cos(radians);
+		float sinAngle = (float) Math.sin(radians);
 
-		frame.sunDirection.set(-sin, cos, 0.15f).normalize();
+		// The slight Z tilt matches the game's arc rather than a plain rotation
+		// about one axis.
+		frame.sunDirection.set(-cosAngle, sinAngle, 0.15f).normalize();
 
 		float elevation = frame.sunDirection.y;
 

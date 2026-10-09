@@ -1,28 +1,36 @@
 package dev.onigiri.pipeline;
 
-import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
 /**
- * Everything the passes need to know about the current frame, captured once on
- * the render thread and passed around as an immutable value.
+ * Per-frame state shared by every pass.
  *
- * <p>The previous frame's view-projection matrix is carried alongside the
- * current one: the temporal pass needs it to reproject history, and keeping a
- * copy is far cheaper than re-deriving it.
+ * <p>Mutable by design: the values are produced once on the render thread by
+ * {@link LightingModel} and {@link ProjectionModel}, then read by six passes.
+ * Copying eight matrices per frame would be pure waste for state that never
+ * escapes the render thread.
+ *
+ * <p>The previous view-projection is carried alongside the current one because
+ * the temporal pass needs it to reproject history, and keeping a copy is far
+ * cheaper than re-deriving it.
+ *
+ * <p>Every matrix here is authoritative as set by {@link ProjectionModel}: the
+ * pipeline only reads them. An earlier version inverted the "inverse" matrices
+ * in place without ever copying the forward matrix into them, which silently
+ * left all three inverses as the identity and made every depth reconstruction
+ * in the shader return raw NDC. Constructing forward and inverse together, in
+ * one place, is what prevents that class of bug recurring.
  */
 public final class FrameState {
-	public int width;
-	public int height;
+	public final org.joml.Matrix4f projection = new org.joml.Matrix4f();
+	public final org.joml.Matrix4f inverseProjection = new org.joml.Matrix4f();
+	public final org.joml.Matrix4f view = new org.joml.Matrix4f();
+	public final org.joml.Matrix4f viewInverse = new org.joml.Matrix4f();
+	public final org.joml.Matrix4f viewProjection = new org.joml.Matrix4f();
+	public final org.joml.Matrix4f inverseViewProjection = new org.joml.Matrix4f();
+	public final org.joml.Matrix4f previousViewProjection = new org.joml.Matrix4f();
 
-	public Matrix4f projection = new Matrix4f();
-	public Matrix4f inverseProjection = new Matrix4f();
-	public Matrix4f view = new Matrix4f();
-	public Matrix4f viewInverse = new Matrix4f();
-	public Matrix4f viewProjection = new Matrix4f();
-	public Matrix4f inverseViewProjection = new Matrix4f();
-	public Matrix4f previousViewProjection = new Matrix4f();
-
+	/** Camera position in world space. */
 	public final Vector3f cameraPos = new Vector3f();
 
 	/** Camera yaw in degrees, from the camera entity. */
@@ -30,9 +38,6 @@ public final class FrameState {
 
 	/** Camera pitch in degrees, from the camera entity. */
 	public float cameraPitch;
-
-	/** Vertical field of view in degrees, including sprint and speed effects. */
-	public float fov = 70.0f;
 
 	/** World-space direction pointing towards the sun, normalised. */
 	public final Vector3f sunDirection = new Vector3f(0.0f, 1.0f, 0.0f);
@@ -61,13 +66,5 @@ public final class FrameState {
 	/** Requests that the temporal pass discard its history on the next frame. */
 	public void requestHistoryReset() {
 		resetHistory = true;
-	}
-
-	public float halfWidth() {
-		return Math.max(1.0f, width * 0.5f);
-	}
-
-	public float halfHeight() {
-		return Math.max(1.0f, height * 0.5f);
 	}
 }

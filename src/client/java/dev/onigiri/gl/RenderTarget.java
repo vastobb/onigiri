@@ -1,21 +1,20 @@
 package dev.onigiri.gl;
 
-import org.lwjgl.opengl.GL11;
-import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL30;
-import org.lwjgl.opengl.GL45;
 
 /**
  * A colour texture plus the framebuffer that renders into it.
  *
- * <p>The effects chain allocates these at half resolution. That is the single
- * largest performance decision in the renderer: ambient occlusion, reflections
- * and shadows are all low-frequency signals, and the temporal pass reconstructs
- * full apparent detail from the half-res history regardless.
+ * <p>All of the effect targets are half resolution. On a phone that is the
+ * single most valuable decision in the renderer: these effects are all
+ * low-frequency signals, so halving each dimension cuts their fill cost to a
+ * quarter while the temporal pass reconstructs apparent detail from history.
+ * On a tile-based mobile GPU it also cuts the number of framebuffer tile
+ * switches per frame, which costs more than the shading itself.
  *
- * <p>Colour is {@code RGBA16F}. Several passes legitimately produce values above
- * 1.0 before the tonemap, so an 8-bit intermediate would band in exactly the
- * highlights that matter most.
+ * <p>Storage is allocated with {@code glTexImage2D} rather than
+ * {@code glTexStorage2D}. The latter is GL 4.2 / GLES 3.1, and MobileGlues
+ * does not guarantee it; {@code glTexImage2D} is universal.
  */
 public final class RenderTarget implements AutoCloseable {
 	private int width;
@@ -53,33 +52,39 @@ public final class RenderTarget implements AutoCloseable {
 	}
 
 	private void allocate() {
+		int format = GlCaps.hdrFormat();
+
 		framebufferId = GL30.glGenFramebuffers();
 		GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, framebufferId);
 
-		colorTextureId = GL13.glGenTextures();
-		GL13.glBindTexture(GL13.GL_TEXTURE_2D, colorTextureId);
+		colorTextureId = GL30.glGenTextures();
+		GL30.glBindTexture(GL30.GL_TEXTURE_2D, colorTextureId);
 
-		// Immutable storage: one level, no mip chain, allocated once at creation.
-		// A render target is always its own mip 0, so mipmaps would never be used.
-		GL45.glTexStorage2D(GL45.GL_TEXTURE_2D, 1, GL45.GL_RGBA16F, width, height);
+		GL30.glTexImage2D(
+				GL30.GL_TEXTURE_2D, 0, format, width, height, 0,
+				GL30.GL_RGBA,
+				format == GlCaps.FORMAT_RGBA16F ? GL30.GL_HALF_FLOAT : GL30.GL_UNSIGNED_BYTE,
+				org.lwjgl.system.MemoryUtil.NULL);
 
-		GL11.glTexParameteri(GL13.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-		GL11.glTexParameteri(GL13.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-		GL11.glTexParameteri(GL13.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL30.GL_CLAMP_TO_EDGE);
-		GL11.glTexParameteri(GL13.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL30.GL_CLAMP_TO_EDGE);
+		// A render target is always its own mip 0, so there is no mip chain to
+		// build and nothing to gain from anisotropic filtering.
+		GL30.glTexParameteri(GL30.GL_TEXTURE_2D, GL30.GL_TEXTURE_MIN_FILTER, GL30.GL_LINEAR);
+		GL30.glTexParameteri(GL30.GL_TEXTURE_2D, GL30.GL_TEXTURE_MAG_FILTER, GL30.GL_LINEAR);
+		GL30.glTexParameteri(GL30.GL_TEXTURE_2D, GL30.GL_TEXTURE_WRAP_S, GL30.GL_CLAMP_TO_EDGE);
+		GL30.glTexParameteri(GL30.GL_TEXTURE_2D, GL30.GL_TEXTURE_WRAP_T, GL30.GL_CLAMP_TO_EDGE);
 
 		GL30.glFramebufferTexture2D(
-				GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL13.GL_TEXTURE_2D, colorTextureId, 0);
+				GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL30.GL_TEXTURE_2D, colorTextureId, 0);
 
 		int status = GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER);
+
+		GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
 
 		if (status != GL30.GL_FRAMEBUFFER_COMPLETE) {
 			release();
 			throw new IllegalStateException(
 					"Incomplete framebuffer (" + width + "x" + height + "): 0x" + Integer.toHexString(status));
 		}
-
-		GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
 	}
 
 	public int framebufferId() {
@@ -101,10 +106,8 @@ public final class RenderTarget implements AutoCloseable {
 	/** Binds this target for drawing and sets a matching viewport. */
 	public void bindForDrawing() {
 		GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, framebufferId);
-		GL11.glViewport(0, 0, width, height);
+		GL30.glViewport(0, 0, width, height);
 	}
-
-	/** Copies {@code textureId} into this target's colour attachment. */
 
 	private void release() {
 		if (framebufferId != 0) {
@@ -113,7 +116,7 @@ public final class RenderTarget implements AutoCloseable {
 		}
 
 		if (colorTextureId != 0) {
-			GL13.glDeleteTextures(colorTextureId);
+			GL30.glDeleteTextures(colorTextureId);
 			colorTextureId = 0;
 		}
 	}

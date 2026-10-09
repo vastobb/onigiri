@@ -2,6 +2,7 @@ package dev.onigiri.pipeline;
 
 import dev.onigiri.OnigiriConfig;
 import dev.onigiri.gl.FramebufferAccess;
+import dev.onigiri.gl.GlCaps;
 import dev.onigiri.gl.RenderTarget;
 import dev.onigiri.gl.ShaderProgram;
 import dev.onigiri.gl.TemporalPair;
@@ -28,11 +29,18 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Only the composite and the geometry reconstruction run at full resolution.
  * Everything else is half res and temporally amortised, which is what keeps the
- * chain cheaper than a single shadow map while looking better than one.
+ * chain affordable on a tile-based mobile GPU.
  *
  * <p>State discipline: each pass binds the framebuffer it needs, and the chain
  * leaves the default framebuffer bound and depth writes re-enabled so the game
  * can carry straight on to the HUD.
+ *
+ * <p><strong>This class does not touch the matrices.</strong> They are built
+ * exactly once per frame by {@link ProjectionModel}, including their inverses.
+ * An earlier version inverted them again here, without ever assigning the
+ * forward matrices first, which silently turned every depth reconstruction in
+ * the shaders into a no-op. Duplicating that responsibility is the bug, not the
+ * individual inversion.
  */
 public final class OnigiriPipeline implements AutoCloseable {
 	private static final Logger LOGGER = LoggerFactory.getLogger("onigiri/pipeline");
@@ -93,6 +101,10 @@ public final class OnigiriPipeline implements AutoCloseable {
 			throw new IllegalStateException("Pipeline already closed");
 		}
 
+		// Probe before allocating anything: the answer decides the format every
+		// target is created with.
+		GlCaps.probe();
+
 		geometryShader = ShaderProgram.load(SHADER_DIR + "geometry.frag");
 		aoShader = ShaderProgram.load(SHADER_DIR + "ao.frag");
 		ssrShader = ShaderProgram.load(SHADER_DIR + "ssr.frag");
@@ -104,21 +116,23 @@ public final class OnigiriPipeline implements AutoCloseable {
 		height = Math.max(1, frameHeight);
 
 		// Core profile needs a bound vertex array even though the vertex shader
-		// derives positions from gl_VertexID. An empty VAO satisfies that.
-		emptyVao = org.lwjgl.opengl.GL30.glGenVertexArrays();
+		// derives positions from gl_VertexID. An empty VAO satisfies that. GLES 3.0
+		// has vertex array objects in core too, so this is correct on both paths.
+		emptyVao = GL30.glGenVertexArrays();
 		GL30.glBindVertexArray(emptyVao);
 
 		computeEffectSize();
 		allocateTargets();
 
 		initialised = true;
-		LOGGER.info("Onigiri pipeline ready ({}x{}, effects {}x{})", width, height, effectWidth, effectHeight);
+		LOGGER.info("Pipeline ready ({}x{}, effects {}x{})", width, height, effectWidth, effectHeight);
 	}
 
 	private void computeEffectSize() {
 		if (config.halfResolution) {
-			effectWidth = Math.max(1, width / 2);
-			effectHeight = Math.max(1, height / 2);
+			float scale = Math.max(0.5f, Math.min(1.0f, config.resolutionScale));
+			effectWidth = Math.max(1, Math.round(width * 0.5f * scale));
+			effectHeight = Math.max(1, Math.round(height * 0.5f * scale));
 		} else {
 			effectWidth = width;
 			effectHeight = height;
@@ -139,7 +153,7 @@ public final class OnigiriPipeline implements AutoCloseable {
 		frame.requestHistoryReset();
 	}
 
-	/** Reallocates on resize or when the half-resolution setting changes. */
+	/** Reallocates on resize or when the resolution settings change. */
 	public void resize(int newWidth, int newHeight) {
 		if (!initialised) {
 			return;
@@ -167,7 +181,7 @@ public final class OnigiriPipeline implements AutoCloseable {
 		frame.requestHistoryReset();
 	}
 
-	/** Reacts to the half-resolution toggle taking effect mid-session. */
+	/** Reacts to the resolution settings changing mid-session, e.g. from the menu. */
 	public void effectScaleChanged() {
 		if (!initialised) {
 			return;
@@ -193,6 +207,11 @@ public final class OnigiriPipeline implements AutoCloseable {
 		return frame;
 	}
 
+	/** True once shaders are compiled and targets exist. */
+	public boolean isInitialised() {
+		return initialised;
+	}
+
 	/** Runs one frame. The caller must already have the world in the main FBO. */
 	public void render() {
 		if (!initialised) {
@@ -215,15 +234,8 @@ public final class OnigiriPipeline implements AutoCloseable {
 		GL11.glDisable(GL11.GL_CULL_FACE);
 		GL30.glBindVertexArray(emptyVao);
 
-		// The view matrix and its inverse are shared by several passes: the sky
-		// fallback converts ray directions between spaces, and the temporal pass
-		// reprojects through the inverse view-projection.
-		frame.view.set(frame.viewProjection);
-		frame.view.invert();
-		frame.viewInverse.set(frame.view).invert();
-		frame.inverseProjection.invert();
-		frame.inverseViewProjection.invert();
-
+		// Matrices are already built and inverted by ProjectionModel. Nothing here
+		// touches them.
 		runGeometryPass(depthTexture);
 		runAoPass(depthTexture);
 		runSsrPass(depthTexture, colorTexture);
@@ -265,8 +277,7 @@ public final class OnigiriPipeline implements AutoCloseable {
 		shader.uniformMatrix("uPrevViewProj", frame.previousViewProjection);
 
 		shader.uniform2f("uResolution", width, height);
-		shader.uniform2f("uHalfResolution", effectWidth, effectHeight);
-		shader.uniform2f("uTexelSize", 1.0f / width, 1.0f / height);
+		shader.uniform2f("uEffectResolution", effectWidth, effectHeight);
 
 		shader.uniform3f("uCameraPos", frame.cameraPos.x, frame.cameraPos.y, frame.cameraPos.z);
 		shader.uniform3f("uSunDir", frame.sunDirection.x, frame.sunDirection.y, frame.sunDirection.z);
@@ -294,6 +305,7 @@ public final class OnigiriPipeline implements AutoCloseable {
 	/** Pass 2: horizon-based ambient occlusion. */
 	private void runAoPass(int depthTexture) {
 		if (!config.ambientOcclusion) {
+			// Fully open, so the composite leaves ambient alone.
 			clear(aoTarget, 1.0f, 1.0f, 1.0f, 1.0f);
 			return;
 		}
@@ -313,6 +325,7 @@ public final class OnigiriPipeline implements AutoCloseable {
 	/** Pass 3: screen-space reflections. */
 	private void runSsrPass(int depthTexture, int colorTexture) {
 		if (!config.reflections) {
+			// No reflection contribution.
 			clear(ssrTarget, 0.0f, 0.0f, 0.0f, 0.0f);
 			return;
 		}
@@ -360,7 +373,8 @@ public final class OnigiriPipeline implements AutoCloseable {
 	 *
 	 * <p>Reads {@code source} plus {@code pair}'s read target, writes into its
 	 * write target, then swaps so the resolved result becomes next frame's
-	 * history.
+	 * history. Reading and writing one texture in a single draw is undefined in
+	 * GL, so the double buffer is required rather than an optimisation.
 	 */
 	private void resolveTemporal(RenderTarget source, TemporalPair pair, int depthTexture) {
 		pair.write().bindForDrawing();
@@ -429,6 +443,11 @@ public final class OnigiriPipeline implements AutoCloseable {
 			GL13.glActiveTexture(GL13.GL_TEXTURE0 + unit);
 			GL13.glBindTexture(GL13.GL_TEXTURE_2D, 0);
 		}
+
+		// Return to unit 0. Some drivers - notably tiled mobile ones - treat the
+		// active unit as part of their frame state, and the game's own drawing
+		// code assumes it starts from the default.
+		GL13.glActiveTexture(GL13.GL_TEXTURE0);
 	}
 
 	public int width() {

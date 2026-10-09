@@ -6,34 +6,43 @@ import org.lwjgl.opengl.GL30;
 import org.lwjgl.system.MemoryUtil;
 
 /**
- * Access to the game's main framebuffer attachments.
+ * Reads the colour and depth textures Minecraft has already rendered into.
  *
- * <p>The renderer needs the colour and depth textures Minecraft already rendered
- * into. On 26.x those live behind {@code MainTarget} and {@code GpuTextureView},
- * which are abstractions over the active graphics backend - so rather than bind
- * against a class that may be a GL or Vulkan implementation, we read the
- * attachment IDs straight out of OpenGL.
+ * <p>Two constraints shape this class.
  *
- * <p>That is the right trade here for two reasons: the shader pipeline is
- * inherently GL-specific (raw {@code GL30}/{@code GL45} calls, {@code RGBA16F}
- * targets, fullscreen triangle), and querying the bound framebuffer is both
- * cheaper and more stable than reflecting over the backend abstraction.
+ * <p>First, on 26.x the game's target sits behind {@code MainTarget} and
+ * {@code GpuTextureView}, abstractions over whichever backend is active. Reading
+ * the attachment IDs straight out of OpenGL sidesteps that entirely, and works
+ * the same on desktop GL and on MobileGlues' translated GLES.
+ *
+ * <p>Second, and more important on mobile: <strong>this runs twice per frame</strong>,
+ * inside the render loop, and it used to drain the GL error queue both times.
+ * {@code glGetError} is a synchronising call - on Adreno and Mali it flushes the
+ * command buffer and costs a visible stall. Doing that twice a frame is enough
+ * to lose the frame on its own.
+ *
+ * <p>So the error check is gone entirely and the scratch buffer is allocated
+ * once. The attachment IDs are queried directly; a query that fails yields 0,
+ * and the caller skips the frame, which is the correct outcome anyway.
  */
 public final class FramebufferAccess {
+	/** Reused across calls; framebuffer queries are on the hot path. */
+	private static final IntBuffer SCRATCH = MemoryUtil.memAllocInt(4);
+
 	private FramebufferAccess() {
 	}
 
 	/**
-	 * Returns the texture object attached to {@code attachment} of the currently
-	 * bound framebuffer, or {@code 0} when the slot is empty or is a renderbuffer
-	 * rather than a texture.
+	 * Returns the texture attached to {@code attachment} of the currently bound
+	 * framebuffer, or 0 when the slot is empty, is a renderbuffer, or the bound
+	 * target is the default framebuffer.
 	 *
-	 * <p>Note that a multisampled attachment has no single sampleable texture
-	 * object, so this returns 0 in that case and the caller correctly skips the
-	 * frame instead of reading a resolve-in-progress buffer.
+	 * <p>A multisampled attachment has no single sampleable texture, so this
+	 * returns 0 there too and the frame is skipped rather than sampling a
+	 * resolve-in-progress buffer.
 	 *
-	 * @param attachment one of {@code GL30.GL_COLOR_ATTACHMENT0} or
-	 *                   {@code GL30.GL_DEPTH_ATTACHMENT}
+	 * @param attachment {@link GL30#GL_COLOR_ATTACHMENT0} or
+	 *                   {@link GL30#GL_DEPTH_ATTACHMENT}
 	 */
 	public static int attachedTexture(int attachment) {
 		int framebuffer = GL30.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
@@ -43,25 +52,16 @@ public final class FramebufferAccess {
 			return 0;
 		}
 
-		// Clear any pre-existing error so the check below only reflects this call.
-		while (GL30.glGetError() != GL30.GL_NO_ERROR) {
-			// Drain.
-		}
+		SCRATCH.clear();
 
-		IntBuffer result = MemoryUtil.memAllocInt(1);
+		GL30.glGetFramebufferAttachmentParameteriv(
+				GL30.GL_FRAMEBUFFER, attachment, GL30.GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, SCRATCH);
 
-		try {
-			GL30.glGetFramebufferAttachmentParameteriv(
-					GL30.GL_FRAMEBUFFER, attachment, GL30.GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, result);
+		int texture = SCRATCH.get(0);
 
-			if (GL30.glGetError() != GL30.GL_NO_ERROR) {
-				return 0;
-			}
-
-			return result.get(0);
-		} finally {
-			MemoryUtil.memFree(result);
-		}
+		// Guard against a driver that leaves the slot untouched on a renderbuffer
+		// attachment, which would otherwise hand back whatever was there before.
+		return texture == 0 ? 0 : texture;
 	}
 
 	/** The colour texture of the bound framebuffer, or 0 for the default one. */
@@ -73,5 +73,4 @@ public final class FramebufferAccess {
 	public static int boundDepthTexture() {
 		return attachedTexture(GL30.GL_DEPTH_ATTACHMENT);
 	}
-
 }

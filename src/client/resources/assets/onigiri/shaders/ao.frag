@@ -1,11 +1,9 @@
-#version 150 core
-
 // Pass 2 - horizon-based ambient occlusion at half resolution.
 //
-// This is the first of the two effects that make Onigiri cheap. GTAO-style
-// occlusion is expensive per pixel if sampled densely, so instead we run a
-// small, fixed number of directions per pixel and let temporal accumulation
-// (pass 5) average the rest. Each pixel only ever does a handful of taps.
+// GTAO-style occlusion is expensive per pixel if sampled densely. Instead this
+// runs a small, fixed number of directions per pixel and lets temporal
+// accumulation (pass 5) average out the rest, which is what makes AO viable on a
+// phone at all.
 
 #include "common.glsl"
 
@@ -36,8 +34,8 @@ float sliceOcclusion(vec3 P, vec3 N, float radius, float rot, float sliceFrac) {
         t = t * t;
 
         // March in screen space by an amount that corresponds to `radius * t`
-        // world units at this depth. Converting through the projection keeps
-        // the search radius perceptually constant with distance.
+        // world units at this depth. Converting through the projection keeps the
+        // search radius perceptually constant with distance.
         vec2 offset = screenDir * (radius * t) * projScale() / max(-P.z, uNear);
         vec2 suv = vUv + offset;
 
@@ -97,7 +95,7 @@ void main() {
     occ *= 1.0 - smoothstep(0.55, 1.0, depthNorm);
 
     // rgb = visibility (1 = open, 0 = occluded), a = this pixel's view depth.
-    // The alpha is what lets the composite pass upsample this without bleeding
+    // The alpha is what lets the composite upsample this without bleeding
     // occlusion across silhouettes.
     fragColor = vec4(vec3(clamp(1.0 - occ, 0.0, 1.0)), depthNorm);
 }

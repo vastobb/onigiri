@@ -1,5 +1,3 @@
-#version 150 core
-
 // Pass 5 - temporal resolve.
 //
 // Merges this frame's half-res AO, SSR and shadow results with the history
@@ -36,7 +34,8 @@ uniform int   uHasHistory;
  * standard anti-ghosting clamp: history that falls outside it cannot have come
  * from the same surface as this pixel, so it is rejected.
  */
-void neighbourhoodBox(sampler2D tex, vec2 uv, vec2 texel, float gamma, out vec3 mean, out vec3 halfExtent) {
+void neighbourhoodBox(sampler2D tex, vec2 uv, vec2 texel, float gamma,
+                      out vec3 mean, out vec3 halfExtent) {
     vec3 sum = vec3(0.0);
     vec3 sumSq = vec3(0.0);
 
@@ -93,7 +92,7 @@ void main() {
     vec4 prevClip = uPrevViewProj * vec4(worldPos, 1.0);
 
     if (prevClip.w <= 0.0) {
-        fragColor = current;
+        fragColor = carried ? vec4(1.0, 1.0, 1.0, current.a) : current;
         return;
     }
 
@@ -101,17 +100,23 @@ void main() {
 
     // Off screen: no history to use.
     if (prevUv.x < 0.0 || prevUv.x > 1.0 || prevUv.y < 0.0 || prevUv.y > 1.0) {
-        fragColor = current;
+        fragColor = carried ? vec4(1.0, 1.0, 1.0, current.a) : current;
         return;
     }
 
     vec4 history = texture(uHistory, prevUv);
 
-    // A skipped pixel carries its previous answer verbatim. Reprojection already
-    // placed that answer at the right pixel, and clamping it against a
-    // neighbourhood built from sentinel values would only inject noise.
     if (carried) {
-        fragColor = history;
+        // A skipped pixel carries its previous answer verbatim. Reprojection
+        // already placed that answer at the right pixel, and clamping it against
+        // a neighbourhood built from sentinel values would only inject noise.
+        //
+        // Alpha comes from *this* frame, not from history: it is this pixel's
+        // depth, and the composite's depth-aware upsample weighs taps by it.
+        // Copying last frame's alpha would let the upsample compare a stale
+        // depth against the current surface and reject valid taps, which shows up
+        // as quarter-rate shadows flickering along silhouettes.
+        fragColor = vec4(history.rgb, current.a);
         return;
     }
 
@@ -126,7 +131,8 @@ void main() {
     vec3 lower = mean - halfExtent;
     vec3 upper = mean + halfExtent;
 
-    bool historyValid = all(greaterThanEqual(historyRgb, lower)) && all(lessThanEqual(historyRgb, upper));
+    bool historyValid = all(greaterThanEqual(historyRgb, lower))
+                     && all(lessThanEqual(historyRgb, upper));
 
     float feedback = uFeedback;
 
@@ -137,8 +143,8 @@ void main() {
         feedback *= 0.55;
     }
 
-    // Adaptive feedback. Low contrast areas (already converged) converge fast;
-    // high contrast areas (in motion) trust the present more.
+    // Adaptive feedback. Low-contrast areas (already converged) converge fast;
+    // high-contrast areas (in motion) trust the present more.
     float variance = meanExtent(halfExtent);
     feedback *= mix(1.0, 0.7, clamp(variance * 4.0, 0.0, 1.0));
 

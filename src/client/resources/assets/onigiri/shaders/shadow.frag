@@ -1,22 +1,19 @@
-#version 150 core
-
-// Pass 4 - shadows, and the reason Onigiri runs at a small fraction of vanilla's
-// cost while still looking better than anything that samples a shadow map.
+// Pass 4 - sun shadows.
 //
 // The idea: instead of rendering a shadow map (an extra geometry pass plus a
-// comparison per lit pixel) we march a short ray towards the sun through the
-// depth buffer we already have. Screen-space shadows only cover what is on
+// comparison per lit pixel) march a short ray towards the sun through the depth
+// buffer the game already produced. Screen-space shadows only cover what is on
 // screen, but for contact and mid-range occlusion - which is where a shadow map
 // spends nearly all of its quality budget - that is enough.
 //
-// The cost trick is temporal amortisation. Each frame only a rotating
-// blue-noise subset of pixels actually traces a ray; every other pixel keeps its
-// answer from the history buffer, reprojected through last frame's matrices.
-// A quarter of the pixels at full precision, upsampled, is visually
-// indistinguishable from all of them at a quarter of the price.
+// The cost trick is temporal amortisation. Each frame only a rotating subset of
+// pixels traces a ray; every other pixel keeps its answer from the history
+// buffer, reprojected through last frame's matrices. A quarter of the pixels at
+// full precision, upsampled, is visually indistinguishable from all of them at a
+// quarter of the price.
 //
-// Cost per frame is therefore ~ (steps / 4) taps per pixel at half resolution,
-// and it spreads across four frames. That is the trade.
+// On a phone this is the difference between shadows being affordable and shadows
+// being the reason the mod is unplayable.
 
 #include "common.glsl"
 
@@ -52,16 +49,23 @@ void main() {
     vec3 P = viewPosFromDepth(vUv, d);
     vec3 N = normalize(nd.xyz * 2.0 - 1.0);
 
-    // Project the sun direction into view space and normalise it.
+    // The sun direction is already in view space on the CPU side, transformed by
+    // the view matrix. Normalise defensively: the projection scales this when it
+    // arrives at the shader.
     vec3 L = normalize(uSunDirView);
 
     // NdotL decides how much light this surface could receive at all. Surfaces
     // facing away skip the march entirely - a free early out on roughly half the
-    // screen at any given sun angle.
+    // screen at any given sun angle, which on a phone is worth more than the
+    // march itself.
     float NdotL = dot(N, L);
 
     if (NdotL <= 0.0) {
-        fragColor = vec4(0.0, 0.0, 0.0, depthNorm);
+        // Backfacing, so NdotL is zero and the composite's direct term is zero
+        // anyway. Write the lit value so this buffer agrees with the convention
+        // that a zero NdotL surface is unoccluded rather than fully shadowed -
+        // writing 0 here would double-darken it.
+        fragColor = vec4(1.0, 1.0, 1.0, depthNorm);
         return;
     }
 

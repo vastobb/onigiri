@@ -12,29 +12,50 @@ import com.google.gson.GsonBuilder;
 /**
  * Onigiri's tunables, persisted as JSON next to the game's other mod configs.
  *
- * <p>Every field is a plain value with a sensible default so a missing or
- * partially-written file still yields a usable configuration. Quality presets
- * exist mainly to change the two things that actually move the frame time:
- * sample counts and the temporal feedback.
+ * <p>Every field has a default, so a missing or partially-written file still
+ * yields a usable configuration.
+ *
+ * <p>Defaults are chosen for a phone rather than a desktop GPU. A mid-range
+ * Adreno or Mali cannot afford the desktop preset's sample counts at 1080p, so
+ * quality starts at 1 and reflections default to off - SSR is the single most
+ * expensive pass, and a player on a phone is far better served by shadows and AO
+ * that hold frame rate than by reflections that do not.
  */
 public final class OnigiriConfig {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
 	// --- quality -----------------------------------------------------------
 
-	/** 0 = potato, 1 = balanced, 2 = high, 3 = ultra. */
-	public int quality = 2;
+	/** 0 = potato, 1 = mobile, 2 = balanced, 3 = ultra. */
+	public int quality = 1;
 
 	/** Master switch for the whole pipeline. */
 	public boolean enabled = true;
 
-	/** Render the effects at half resolution. Disabling this doubles the cost. */
+	/**
+	 * Render the effects at half resolution.
+	 *
+	 * <p>Leave this on. Disabling it quadruples the fill cost of five of the six
+	 * passes, which on a phone is the difference between playable and not.
+	 */
 	public boolean halfResolution = true;
+
+	/**
+	 * Scale applied on top of {@link #halfResolution}.
+	 *
+	 * <p>An extra 0.5 takes the effects to quarter resolution, which is a further
+	 * fourfold saving in the chain. It is the single most effective knob on a
+	 * weak GPU, and the upsampler is designed to hide it.
+	 */
+	public float resolutionScale = 1.0f;
 
 	// --- effects -----------------------------------------------------------
 
 	public boolean ambientOcclusion = true;
-	public boolean reflections = true;
+
+	/** Off by default: SSR is the most expensive pass in the chain. */
+	public boolean reflections = false;
+
 	public boolean shadows = true;
 
 	public float aoStrength = 0.85f;
@@ -57,6 +78,7 @@ public final class OnigiriConfig {
 
 	// --- debug -------------------------------------------------------------
 
+	/** Draws the resolution and effect-state readout on the debug overlay. */
 	public boolean debugOverlay = false;
 
 	private static OnigiriConfig instance = new OnigiriConfig();
@@ -105,6 +127,8 @@ public final class OnigiriConfig {
 	public void sanitise() {
 		quality = clamp(quality, 0, 3);
 
+		resolutionScale = clamp(resolutionScale, 0.5f, 1.0f);
+
 		aoStrength = clamp(aoStrength, 0.0f, 1.0f);
 		ssrStrength = clamp(ssrStrength, 0.0f, 2.0f);
 		shadowStrength = clamp(shadowStrength, 0.0f, 1.0f);
@@ -126,6 +150,16 @@ public final class OnigiriConfig {
 
 	// --- presets -----------------------------------------------------------
 
+	/** Human-readable name for the current quality tier. */
+	public String qualityName() {
+		return switch (quality) {
+			case 0 -> "Potato";
+			case 1 -> "Mobile";
+			case 2 -> "Balanced";
+			default -> "Ultra";
+		};
+	}
+
 	/** Horizon slices per pixel for the AO pass. */
 	public int aoDirections() {
 		return switch (quality) {
@@ -140,7 +174,7 @@ public final class OnigiriConfig {
 	public int aoSteps() {
 		return switch (quality) {
 			case 0 -> 2;
-			case 1 -> 4;
+			case 1 -> 3;
 			case 2 -> 5;
 			default -> 8;
 		};
@@ -149,8 +183,8 @@ public final class OnigiriConfig {
 	/** Ray steps for the reflection pass. */
 	public int ssrSteps() {
 		return switch (quality) {
-			case 0 -> 12;
-			case 1 -> 20;
+			case 0 -> 8;
+			case 1 -> 14;
 			case 2 -> 28;
 			default -> 40;
 		};
@@ -159,17 +193,20 @@ public final class OnigiriConfig {
 	/** Ray steps for the shadow pass. Only a quarter of pixels run it per frame. */
 	public int shadowSteps() {
 		return switch (quality) {
-			case 0 -> 6;
-			case 1 -> 10;
+			case 0 -> 4;
+			case 1 -> 8;
 			case 2 -> 14;
 			default -> 20;
 		};
 	}
 
 	/**
-	 * Fraction of pixels that trace shadows each frame. Kept at 0.25 because the
-	 * temporal pass resolves it over four frames; lower values ghost on fast
-	 * camera motion.
+	 * Fraction of pixels that trace shadows each frame.
+	 *
+	 * <p>Held at 0.25 because the temporal pass resolves it over four frames;
+	 * lowering it ghosts on fast camera motion, which on a phone is most of the
+	 * time. The shader hardcodes the same 0.25, so this is the single place the
+	 * schedule is described.
 	 */
 	public float shadowActiveFraction() {
 		return 0.25f;

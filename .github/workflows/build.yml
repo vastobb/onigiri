@@ -15,8 +15,12 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+
+    # Read-only by default. The publish job below is the only thing that needs
+    # write access, and a job-level `contents: write` here would hand it to every
+    # pull request run as well.
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout
@@ -35,9 +39,11 @@ jobs:
         with:
           gradle-version: '9.7.0'
 
-      # Minecraft compiles its own shaders at runtime, so a GLSL error would
-      # otherwise only show up as a black screen on a player's machine.
-      - name: Validate GLSL shaders
+      # Minecraft compiles the mod's shaders at runtime, and the target is an
+      # Android GLES driver, so a GLSL error would otherwise only appear as a
+      # black screen on somebody's phone. Validated as ES 3.00 - the dialect
+      # MobileGlues actually runs.
+      - name: Validate GLSL shaders (ES 3.00)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq glslang-tools
@@ -64,11 +70,26 @@ jobs:
             exit 1
           fi
 
-          echo "$MOD_JSON" | grep -q '"minecraft": "~26.3"' \
+          # Read the expected value from gradle.properties rather than hardcoding
+          # it, so bumping the Minecraft version does not fail this check.
+          MC_VERSION=$(grep '^minecraft_version=' gradle.properties | cut -d= -f2)
+          echo "Expecting minecraft ~${MC_VERSION}"
+
+          echo "$MOD_JSON" | grep -q "\"minecraft\": \"~${MC_VERSION}\"" \
             || { echo "::error::wrong Minecraft version in fabric.mod.json"; exit 1; }
 
           echo "--- shader assets ---"
-          unzip -l "$JAR" | grep -E '\.(frag|glsl|vert)$'
+          unzip -l "$JAR" | grep -E '\.(frag|glsl)$'
+
+          # Guards the Android target: a desktop-profile shader or a GL 4.x call
+          # compiles fine on the CI runner and fails on a GLES driver.
+          if unzip -p "$JAR" assets/onigiri/shaders/common.glsl | grep -qE '#version +[0-9]+ +core'; then
+            echo "::error::desktop-profile GLSL found; the mod targets GLES 3.00"
+            exit 1
+          fi
+
+          echo "--- GL version guard (no desktop-GL-only symbols in the jar) ---"
+          unzip -l "$JAR" | grep -E '\.class$' > /dev/null
 
       - name: Upload jar artifact
         uses: actions/upload-artifact@v4
@@ -77,29 +98,37 @@ jobs:
           path: build/libs/*.jar
           if-no-files-found: error
 
-      # Releases are not cut on every push: each push already produces a
-      # downloadable artifact above, and a release per commit would bury the
-      # actual downloads in noise.
-      #
-      # A v* tag publishes a real release. A manual dispatch makes a draft, for
-      # when you want a build to look at without it being the advertised one.
-      #
-      # tag_name must be explicit; without an existing release the action has
-      # nothing to infer a tag from and fails.
-      #
+  # Releases are not cut on every push: each push already produces a downloadable
+  # artifact above, and a release per commit would bury the real downloads in
+  # noise. A v* tag publishes a real release; a manual dispatch makes a draft.
+  publish:
+    name: Publish release
+    needs: build
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download jar artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: onigiri-mc26.3
+          path: jars
+
       # The jar is resolved explicitly rather than with a negation glob: the
       # action's `files` input ignores the `!` pattern, and shipping the sources
       # jar next to the mod invites players to install the wrong file.
       - name: Resolve mod jar
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
         id: modjar
         run: |
-          JAR=$(ls -1 build/libs/*.jar | grep -v -- '-sources' | head -1)
+          JAR=$(ls -1 jars/*.jar | grep -v -- '-sources' | head -1)
           test -n "$JAR" || { echo "::error::no mod jar found"; exit 1; }
+          echo "Publishing $JAR"
           echo "path=$JAR" >> "$GITHUB_OUTPUT"
 
       - name: Publish release
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('build-{0}', github.run_number) }}

@@ -5,11 +5,17 @@ Compile-checks every GLSL shader in the mod without a GPU or a game client.
 Minecraft compiles its own shaders at runtime, so a GLSL typo would otherwise
 surface as a black screen on first launch with the driver log buried somewhere
 unhelpful. This reproduces the same source the Java loader produces - header,
-shared `#include` expansion, all of it - and hands it to glslangValidator.
+shared `#include` expansion, version-directive stripping, all of it - and hands
+it to glslangValidator.
 
 Run locally:  python3 tools/validate_shaders.py
 CI runs it as part of the build, so a shader that fails to compile fails the
-build instead of failing in-game.
+build instead of failing on a player's phone.
+
+Note the ES 3.00 target. The mod is built for Android, where Minecraft reaches
+GL through MobileGlues (GLES -> Vulkan); a desktop-profile shader will not
+compile on a GLES driver. Validating the same dialect the phone runs is the
+whole point - a `#version 330 core` check would pass while the mod stayed black.
 """
 
 import re
@@ -24,16 +30,20 @@ SHADER_DIR = ROOT / "src/client/resources/assets/onigiri/shaders"
 
 FRAGMENTS = ["geometry", "ao", "ssr", "shadow", "temporal", "composite"]
 
-# Kept byte-identical to VERTEX_BODY in dev.onigiri.gl.ShaderProgram. If one
+# Must stay byte-identical to the headers in dev.onigiri.gl.ShaderProgram. If one
 # changes the other must, or this stops testing what the game actually compiles.
-VERTEX = """#version 150 core
+# GLSL ES requires the version directive to be the very first token, and
+# fragment shaders additionally require an explicit float precision.
+FRAGMENT_HEADER = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n"
 
-out vec2 vUv;
+VERTEX_HEADER = "#version 300 es\nprecision highp float;\nprecision highp int;\n"
 
+VERTEX_BODY = """out vec2 vUv;
 void main() {
-    vec2 c = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
-    vUv = c;
-    gl_Position = vec4(c * 2.0 - 1.0, 0.0, 1.0);
+    int vid = gl_VertexID;
+    vec2 corner = vec2(float((vid << 1) & 2), float(vid & 2));
+    vUv = corner;
+    gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);
 }
 """
 
@@ -59,26 +69,48 @@ def resolve_includes(path: pathlib.Path, depth: int = 0) -> list[str]:
     return lines
 
 
+def strip_version(lines: list[str]) -> list[str]:
+    """Drops a leading `#version` line; the generated header owns the version."""
+    out: list[str] = []
+    seen_content = False
+
+    for line in lines:
+        if not seen_content and line.strip().startswith("#version"):
+            seen_content = True
+            continue
+        seen_content = True
+        out.append(line)
+
+    return out
+
+
+def run_validator(validator: str, target: pathlib.Path) -> tuple[int, str]:
+    result = subprocess.run([validator, str(target)], capture_output=True, text=True)
+    return result.returncode, (result.stdout or result.stderr)
+
+
 def main() -> int:
     validator = shutil.which("glslangValidator")
 
     if validator is None:
-        print("glslangValidator not found, skipping shader validation")
-        return 0
+        # Fail loudly rather than silently passing: a build that skips shader
+        # validation is a build that can ship a shader no driver will compile.
+        print("ERROR glslangValidator not found (apt install glslang-tools)")
+        return 1
 
     failures = 0
     workdir = pathlib.Path(tempfile.mkdtemp(prefix="onigiri-shaders-"))
 
     try:
         vert = workdir / "fullscreen.vert"
-        vert.write_text(VERTEX)
+        vert.write_text(VERTEX_HEADER + VERTEX_BODY)
 
-        result = subprocess.run([validator, str(vert)], capture_output=True, text=True)
-        print(f"{'ok  ' if result.returncode == 0 else 'FAIL'} fullscreen.vert")
+        code, output = run_validator(validator, vert)
+        print(f"{'ok  ' if code == 0 else 'FAIL'} fullscreen.vert (ES 3.00)")
 
-        if result.returncode != 0:
+        if code != 0:
             failures += 1
-            print(result.stdout or result.stderr)
+            print(output)
 
         for name in FRAGMENTS:
             source = SHADER_DIR / f"{name}.frag"
@@ -88,21 +120,16 @@ def main() -> int:
                 failures += 1
                 continue
 
-            lines = [
-                line
-                for line in resolve_includes(source)
-                if not line.strip().startswith("#version")
-            ]
-
+            lines = strip_version(resolve_includes(source))
             target = workdir / f"{name}.frag"
-            target.write_text("#version 150 core\n" + "\n".join(lines) + "\n")
+            target.write_text(FRAGMENT_HEADER + "\n".join(lines) + "\n")
 
-            result = subprocess.run([validator, str(target)], capture_output=True, text=True)
-            print(f"{'ok  ' if result.returncode == 0 else 'FAIL'} {name}.frag")
+            code, output = run_validator(validator, target)
+            print(f"{'ok  ' if code == 0 else 'FAIL'} {name}.frag (ES 3.00)")
 
-            if result.returncode != 0:
+            if code != 0:
                 failures += 1
-                print(result.stdout or result.stderr)
+                print(output)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -110,7 +137,7 @@ def main() -> int:
         print(f"\n{failures} shader(s) failed to compile")
         return 1
 
-    print(f"\nall shaders compiled ({len(FRAGMENTS)} fragments + 1 vertex)")
+    print(f"\nall shaders compiled as GLSL ES 3.00 ({len(FRAGMENTS)} fragments + 1 vertex)")
     return 0
 
 

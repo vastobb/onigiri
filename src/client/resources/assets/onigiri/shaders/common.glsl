@@ -2,14 +2,25 @@
 #define ONIGIRI_COMMON_GLSL
 
 // Shared helpers for every Onigiri pass.
-// Matrices arrive in clip space and depth is the standard [0,1] window-space value,
-// so reconstruction is done by unprojecting rather than by hand-rolled linearisation.
+//
+// GLSL ES 3.00, because Android reaches GL through MobileGlues (GLES -> Vulkan)
+// and a desktop-profile shader will not compile there. ES 3.00 is also accepted
+// by desktop GL 3.2+, so this exact source runs on both and CI stays meaningful
+// rather than testing a dialect no player executes.
+//
+// Note on uniform blocks: std140 blocks would cut the per-frame uniform traffic
+// substantially, but they need GLSL ES 3.10. Android launchers vary in the GLES
+// level they expose (older Pojav configurations sit at ES 3.0), and a shader
+// that fails to compile is a dead mod rather than a slow one. Plain uniforms are
+// the floor that always compiles; the location cache in ShaderProgram means the
+// stripped-away ones cost nothing, and the per-pass win comes from resolution
+// and pass count instead.
+//
+// Matrices arrive in clip space and depth is the standard [0,1] window-space
+// value, so reconstruction unprojects rather than hand-rolling linearisation.
 
 const float PI  = 3.141592653589793;
 const float EPS = 1e-6;
-
-uniform sampler2D uDepth;
-uniform sampler2D uColor;
 
 uniform mat4  uProj;
 uniform mat4  uInvProj;
@@ -19,38 +30,29 @@ uniform mat4  uViewProj;
 uniform mat4  uInvViewProj;
 uniform mat4  uPrevViewProj;
 
-uniform vec2  uResolution;       // full-res target size in pixels
-uniform vec2  uHalfResolution;   // half-res target size in pixels
+uniform vec2  uResolution;      // full-res target size
+uniform vec2  uEffectResolution; // half-res target size
 uniform vec3  uCameraPos;
-uniform vec3  uSunDir;           // world space, points *towards* the sun
-uniform vec3  uSunDirView;       // the same direction in view space
+uniform vec3  uSunDir;          // world space, points *towards* the sun
+uniform vec3  uSunDirView;      // the same direction in view space
 uniform vec3  uSunColor;
 uniform vec3  uSkyColor;
 uniform vec3  uAmbientColor;
+
 uniform float uNear;
 uniform float uFar;
-uniform float uFrame;            // monotonically increasing frame counter
 uniform float uTime;
+uniform float uFrame;           // monotonically increasing frame counter
+
+uniform sampler2D uDepth;
+uniform sampler2D uColor;
 
 // ---------------------------------------------------------------- hashing --
-
-float hash11(float p) {
-    p = fract(p * 0.1031);
-    p *= p + 33.33;
-    p *= p + p;
-    return fract(p);
-}
 
 float hash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
-}
-
-vec2 hash22(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.xx + p3.yz) * p3.zy);
 }
 
 // Interleaved gradient noise: cheap, and its spectrum is far friendlier to
@@ -59,7 +61,9 @@ float ign(vec2 p) {
     return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y));
 }
 
-// Per-pixel rotation that walks the whole circle over consecutive frames.
+// Per-pixel rotation that walks the whole circle over consecutive frames, so the
+// AO pass covers different slice directions each frame and temporal accumulation
+// averages them out.
 float frameRotation() {
     return ign(gl_FragCoord.xy + vec2(uFrame * 5.588238, uFrame * 3.141593));
 }
@@ -70,6 +74,7 @@ bool isSky(float d) {
     return d >= 0.999999;
 }
 
+// View-space position from a window-space depth sample.
 vec3 viewPosFromDepth(vec2 uv, float d) {
     vec4 ndc = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
     vec4 v = uInvProj * ndc;
@@ -80,11 +85,6 @@ vec3 worldPosFromDepth(vec2 uv, float d) {
     vec4 ndc = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
     vec4 w = uInvViewProj * ndc;
     return w.xyz / w.w;
-}
-
-float linearDepth(float d) {
-    float z = d * 2.0 - 1.0;
-    return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
 }
 
 // Converts a world-space offset at view depth d into a UV offset.
@@ -128,8 +128,9 @@ vec3 toWorldDir(vec3 viewDir) {
 // ------------------------------------------------------------------ brdf --
 
 // GGX / Trowbridge-Reitz normal distribution plus the Smith height-correlated
-// visibility term and Schlick fresnel. Everything is written out so the
-// composite pass never has to touch a lookup table.
+// visibility term and Schlick fresnel. Written out so the composite pass never
+// has to touch a lookup table - a 2D LUT is another texture unit and another
+// cache miss per pixel on a phone.
 float distributionGGX(float NdotH, float roughness) {
     float a  = roughness * roughness;
     float a2 = a * a;
@@ -154,8 +155,7 @@ vec3 fresnelSchlick(float VdotH, vec3 F0, float roughness) {
 // -------------------------------------------------------------- tonemap ----
 
 // ACES filmic approximation (Krzysztof Narkowicz). Chosen over Reinhard because
-// it keeps saturated highlights from shifting hue as they clip, which matters a
-// lot once bloom and specular are pushing values well above 1.0.
+// it keeps saturated highlights from shifting hue as they clip.
 vec3 tonemap(vec3 x) {
     const float a = 2.51;
     const float b = 0.03;

@@ -1,5 +1,3 @@
-#version 150 core
-
 // Pass 6 - composite and tonemap.
 //
 // Where the actual lighting happens. Rather than replace Minecraft's shading
@@ -55,7 +53,7 @@ bool depthAgree(float tapDepth, float centreDepth) {
 // closely each one's reconstructed depth matches this full-res pixel keeps the
 // effect pinned to the surface it belongs to.
 vec4 sampleHalf(sampler2D tex, vec2 uv, float centreDepth) {
-    vec2 texel = 1.0 / uHalfResolution;
+    vec2 texel = 1.0 / uEffectResolution;
 
     vec2 centre = uv / texel - 0.5;
     vec2 blend = fract(centre);
@@ -90,8 +88,7 @@ void main() {
 
     // Sky: keep as-is, just tonemap it so it matches the rest of the frame.
     if (nd.a < 0.0) {
-        vec3 sky = base * uExposure;
-        fragColor = vec4(tonemap(sky), 1.0);
+        fragColor = vec4(tonemap(base * uExposure), 1.0);
         return;
     }
 
@@ -111,9 +108,8 @@ void main() {
     float shadow = sampleHalf(uShadow, vUv, depthNorm).r;
     vec4 ssr = sampleHalf(uSSR, vUv, depthNorm);
 
-    // ---- albedo -----------------------------------------------------------
-    // The game already applied its lighting. Recover a rough albedo by undoing
-    // the exposure curve and clamping, so we can relight from a sane base.
+    // The game already applied its own lighting; treat the colour buffer as
+    // albedo and relight it.
     vec3 albedo = base;
 
     // ---- direct lighting --------------------------------------------------
@@ -143,14 +139,14 @@ void main() {
     vec3 specular = uSunColor * F * D * Vis * NdotL * shadowTerm * uSpecularStrength;
 
     // ---- ambient ----------------------------------------------------------
-    // Hemispheric ambient, gated by AO. The ground-bounce term keeps
-    // undersides from going pure black, which is what makes AO read as
-    // "contact shadow" rather than "dirty screen".
+    // Hemispheric ambient, gated by AO. The ground-bounce term keeps undersides
+    // from going pure black, which is what makes AO read as "contact shadow"
+    // rather than "dirty screen".
     float upFacing = N.y * 0.5 + 0.5;
     vec3 ambient = mix(uAmbientColor * 0.35, uSkyColor, upFacing);
 
-    // AO applies to ambient only - never to direct light. Applying it to both
-    // is the most common AO mistake and it flattens every direct highlight.
+    // AO applies to ambient only - never to direct light. Applying it to both is
+    // the most common AO mistake and it flattens every direct highlight.
     float aoTerm = mix(1.0, ao, uAOStrength);
     vec3 indirect = ambient * aoTerm * albedo;
 
