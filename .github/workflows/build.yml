@@ -82,12 +82,18 @@ jobs:
       #
       # tag_name must be explicit: without an existing release the action has
       # nothing to infer a tag from and fails.
+      #
+      # Only the mod jar is published. The sources jar is a build by-product,
+      # and listing it next to the download invites players to put the wrong
+      # file in their mods folder.
       - name: Create draft release
         if: github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: Build ${{ github.run_number }}
-          files: build/libs/*.jar
+          files: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
           draft: true
           generate_release_notes: true
