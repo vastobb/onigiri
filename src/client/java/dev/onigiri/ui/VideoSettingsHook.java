@@ -46,55 +46,45 @@ public final class VideoSettingsHook {
 				return;
 			}
 
-			Button button = Button.builder(Component.literal("Onigiri..."), pressed ->
-					client.setScreenAndShow(new OnigiriScreen(screen)))
-					.bounds(0, 0, BUTTON_WIDTH, BUTTON_HEIGHT)
-					.build();
-
-			if (!addToFooter(screen, button, width, height)) {
-				// Fallback: place it in the footer strip, left of the Done button.
-				int x = (width / 2) - 75 - BUTTON_WIDTH - 4;
-				int y = height - BUTTON_HEIGHT - 12;
-
-				screen.addRenderableWidget(
-						Button.builder(Component.literal("Onigiri..."), pressed ->
-								client.setScreenAndShow(new OnigiriScreen(screen)))
-								.bounds(Math.max(4, x), y, BUTTON_WIDTH, BUTTON_HEIGHT)
-								.build());
-			}
+			addToFooter(screen, client);
 		});
 	}
 
 	/**
-	 * Adds {@code button} to the screen's footer layout.
+	 * Adds an Onigiri button to the screen's footer layout.
 	 *
-	 * @return false when the layout could not be reached, so the caller can fall
-	 *         back to absolute positioning
+	 * <p>There is deliberately no fallback here. {@code Screen.addRenderableWidget}
+	 * is protected, so a foreign screen cannot be given a widget directly, and the
+	 * layout is the only supported route. If it ever goes away the button is lost
+	 * and the hotkey still works - which is the right way round.
 	 */
-	private static boolean addToFooter(Screen screen, Button button, int width, int height) {
+	private static void addToFooter(Screen screen, net.minecraft.client.Minecraft client) {
 		try {
 			// Walk up to OptionsSubScreen, which declares the field. Using
 			// getDeclaredField on the concrete class would not find it.
 			Field field = findLayoutField(screen.getClass());
 
 			if (field == null) {
-				return false;
+				OnigiriClient.LOGGER.warn("Video Settings has no HeaderAndFooterLayout; skipping the Onigiri button");
+				return;
 			}
 
 			field.setAccessible(true);
 			Object layout = field.get(screen);
 
 			if (!(layout instanceof HeaderAndFooterLayout footer)) {
-				return false;
+				return;
 			}
 
-			footer.addToFooter(button, settings -> settings.alignHorizontallyRight().paddingRight(4));
-			return true;
+			footer.addToFooter(
+					Button.builder(Component.literal("Onigiri..."), pressed ->
+							client.setScreenAndShow(new OnigiriScreen(screen)))
+							.bounds(0, 0, BUTTON_WIDTH, BUTTON_HEIGHT)
+							.build(),
+					settings -> settings.alignHorizontallyRight().paddingRight(4));
 		} catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
 			OnigiriClient.LOGGER.warn("Could not add the Onigiri button to Video Settings: {}",
 					e.toString());
-
-			return false;
 		}
 	}
 

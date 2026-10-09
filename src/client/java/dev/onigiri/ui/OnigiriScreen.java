@@ -163,7 +163,11 @@ public final class OnigiriScreen extends Screen {
 
 	private int choice(int left, int y, String label, List<String> values,
 					   Supplier<String> current, Consumer<String> apply) {
-		layout.addToContents(CycleButton.builder(value -> Component.literal(value), current)
+		// The type witness is required, not decorative: CycleButton declares
+		// builder(Function, Supplier<T>) and builder(Function, T), and with T
+		// unbounded the second one can itself bind to Supplier<String>, so javac
+		// cannot choose between them without being told.
+		layout.addToContents(CycleButton.<String>builder(value -> Component.literal(value), current)
 				.withValues(values)
 				.displayOnlyValue()
 				.create(left, y, CONTENT_WIDTH, ROW_HEIGHT,
@@ -180,7 +184,7 @@ public final class OnigiriScreen extends Screen {
 					   BooleanSupplier getter, Consumer<Boolean> setter) {
 		List<Boolean> values = List.of(Boolean.FALSE, Boolean.TRUE);
 
-		layout.addToContents(CycleButton.builder(
+		layout.addToContents(CycleButton.<Boolean>builder(
 						on -> Component.literal(on ? "On" : "Off").withStyle(
 								on ? ChatFormatting.GREEN : ChatFormatting.GRAY),
 						getter::getAsBoolean)
