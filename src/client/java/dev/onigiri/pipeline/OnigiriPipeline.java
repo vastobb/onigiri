@@ -2,6 +2,7 @@ package dev.onigiri.pipeline;
 
 import dev.onigiri.OnigiriConfig;
 import dev.onigiri.gl.GlCaps;
+import dev.onigiri.gl.GlState;
 import dev.onigiri.gl.RenderTarget;
 import dev.onigiri.gl.ShaderProgram;
 import dev.onigiri.gl.TemporalPair;
@@ -294,39 +295,41 @@ public final class OnigiriPipeline implements AutoCloseable {
 			return;
 		}
 
-		// Effects sample and write colour; blending and depth are done in-shader.
-		GL11.glDisable(GL11.GL_DEPTH_TEST);
-		GL11.glDisable(GL11.GL_BLEND);
-		GL11.glDisable(GL11.GL_CULL_FACE);
-		GL11.glDisable(GL11.GL_SCISSOR_TEST);
-		GL30.glBindVertexArray(emptyVao);
+		// Save everything the passes touch and detach the game's sampler objects
+		// (see GlState for why). Restored in the finally block no matter how the
+		// passes below exit, because leaking foreign GL state into the game's next
+		// draw is itself a black-screen bug.
+		GlState entry = GlState.save();
 
-		// Matrices are already built and inverted by ProjectionModel. Nothing here
-		// touches them.
-		runGeometryPass(gameDepth);
-		runAoPass(gameDepth);
-		runSsrPass(gameDepth, gameColor);
-		runShadowPass(gameDepth);
+		try {
+			// Effects sample and write colour; blending and depth are done in-shader.
+			GL11.glDisable(GL11.GL_DEPTH_TEST);
+			GL11.glDisable(GL11.GL_BLEND);
+			GL11.glDisable(GL11.GL_CULL_FACE);
+			GL11.glDisable(GL11.GL_SCISSOR_TEST);
+			GL30.glBindVertexArray(emptyVao);
 
-		resolveTemporal(aoTarget, aoHistory, gameDepth);
-		resolveTemporal(ssrTarget, ssrHistory, gameDepth);
-		resolveTemporal(shadowTarget, shadowHistory, gameDepth);
+			// Matrices are already built and inverted by ProjectionModel. Nothing
+			// here touches them.
+			runGeometryPass(gameDepth);
+			runAoPass(gameDepth);
+			runSsrPass(gameDepth, gameColor);
+			runShadowPass(gameDepth);
 
-		runCompositePass(gameDepth, gameColor);
-		logCompositePixelOnce();
-		blitToGame(gameColor);
+			resolveTemporal(aoTarget, aoHistory, gameDepth);
+			resolveTemporal(ssrTarget, ssrHistory, gameDepth);
+			resolveTemporal(shadowTarget, shadowHistory, gameDepth);
 
-		frame.resetHistory = false;
-		frame.advanceFrame(frame.time);
+			runCompositePass(gameDepth, gameColor);
+			logCompositePixelOnce();
+			blitToGame(gameColor);
 
-		unbindTextures();
-
-		// Leave the game the state it expects for whatever renders next. FBO 0 was
-		// bound on entry (the world lives in GPU textures, not a bound
-		// framebuffer, on this path), so that is what is restored.
-		GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
-		GL11.glDepthMask(true);
-		GL11.glEnable(GL11.GL_DEPTH_TEST);
+			frame.resetHistory = false;
+			frame.advanceFrame(frame.time);
+		} finally {
+			unbindTextures();
+			entry.restore();
+		}
 	}
 
 	/**
