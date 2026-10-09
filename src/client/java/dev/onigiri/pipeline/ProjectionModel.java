@@ -2,8 +2,8 @@ package dev.onigiri.pipeline;
 
 import java.lang.reflect.Method;
 
-import org.joml.Matrix3fc;
 import org.joml.Matrix4f;
+import org.joml.Vector4f;
 
 import net.minecraft.client.Minecraft;
 
@@ -53,6 +53,9 @@ public final class ProjectionModel {
 	private static boolean reflectionResolved;
 
 	private static final Matrix4f SCRATCH_VIEW = new Matrix4f();
+
+	/** Scratch for the direction transform, so the render loop stays allocation-free. */
+	private static final Vector4f SCRATCH_DIRECTION = new Vector4f();
 
 	private ProjectionModel() {
 	}
@@ -294,10 +297,19 @@ public final class ProjectionModel {
 			return false;
 		}
 
-		// The shadow and sky passes march in view space, so they need the sun
-		// there too. That depends on the view matrix, which is why it happens
-		// here rather than in LightingModel.
-		frame.sunDirectionView.set(frame.sunDirection).mul((Matrix3fc) frame.view);
+		// The shadow and sky passes march in view space, so they need the sun there
+		// too. That depends on the view matrix, which is why it happens here rather
+		// than in LightingModel.
+		//
+		// A direction, not a point: w is zero, so the perspective divide in the
+		// matrix-vector product cannot skew it. Transforming via Vector4f is also
+		// the only correct way here - the previous code cast the 4x4 view matrix to
+		// Matrix3fc to reach the 3x3 overload, which it does not implement. That
+		// threw a ClassCastException on the very first rendered frame, which the
+		// client treated as fatal and used to switch the whole renderer off.
+		SCRATCH_DIRECTION.set(frame.sunDirection, 0.0f).mul(frame.view);
+
+		frame.sunDirectionView.set(SCRATCH_DIRECTION.x, SCRATCH_DIRECTION.y, SCRATCH_DIRECTION.z);
 
 		float lengthSquared = frame.sunDirectionView.lengthSquared();
 

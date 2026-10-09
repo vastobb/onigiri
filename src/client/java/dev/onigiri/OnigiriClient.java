@@ -44,6 +44,9 @@ public class OnigiriClient implements ClientModInitializer {
 	public static final Logger LOGGER = LoggerFactory.getLogger("onigiri");
 	public static final String MOD_ID = "onigiri";
 
+	/** Consecutive bad frames tolerated before giving up for the session. */
+	private static final int FAILURE_LIMIT = 60;
+
 	private static OnigiriClient instance;
 
 	private OnigiriPipeline pipeline;
@@ -53,6 +56,7 @@ public class OnigiriClient implements ClientModInitializer {
 	private KeyMapping toggleKey;
 
 	private boolean failed;
+	private int consecutiveFailures;
 	private boolean pipelineReady;
 
 	@Override
@@ -103,11 +107,18 @@ public class OnigiriClient implements ClientModInitializer {
 	/**
 	 * Renders one frame of the pipeline.
 	 *
-	 * <p>Every failure path here disables the mod and logs once. A post-process
-	 * renderer that throws inside the render loop would take the whole client
-	 * with it, so failing soft is the only acceptable behaviour - but it does
-	 * log the reason and the renderer name, because on an unknown Android device
-	 * "it stopped working" with no explanation is unactionable.
+	 * <p>A failure is logged and counted, but does not permanently disable the
+	 * renderer on the first one. A post-process renderer that throws inside the
+	 * render loop would take the whole client with it, so failing soft is the only
+	 * acceptable behaviour - but latching off after a single bad frame hides the
+	 * reason entirely, which is worse than the failure: a class of bug that only
+	 * bites on frame one (a bad matrix cast, a context that is not ready yet) used
+	 * to leave the game looking like plain vanilla with a single ERROR line
+	 * nobody reads.
+	 *
+	 * <p>After {@link #FAILURE_LIMIT} consecutive failures the renderer gives up
+	 * for the session, since that indicates something structural rather than
+	 * transient, and says so on screen.
 	 */
 	private void onLevelRenderEnd(LevelRenderContext context) {
 		if (failed || !config.enabled) {
@@ -122,10 +133,37 @@ public class OnigiriClient implements ClientModInitializer {
 
 		try {
 			renderFrame(client);
+			consecutiveFailures = 0;
 		} catch (RuntimeException | LinkageError e) {
-			failed = true;
-			LOGGER.error("Onigiri hit an unrecoverable error and is now disabled", e);
-			LOGGER.error("Renderer was: {}", GlCaps.renderer());
+			consecutiveFailures++;
+
+			if (consecutiveFailures == 1) {
+				LOGGER.error("Onigiri failed to render a frame: {}", e.toString());
+				LOGGER.error("Renderer was: {}", GlCaps.renderer());
+				LOGGER.error("Press F6 for settings. The renderer will retry.", e);
+			} else if (consecutiveFailures >= FAILURE_LIMIT) {
+				failed = true;
+				LOGGER.error("Onigiri failed {} consecutive frames and is now disabled for this session",
+						FAILURE_LIMIT);
+				warnPlayer("Onigiri was disabled after repeated rendering errors. See the log.");
+			}
+		}
+	}
+
+	/** Shows a short message in chat, so a disabled renderer is not silent. */
+	private void warnPlayer(String message) {
+		try {
+			Minecraft client = Minecraft.getInstance();
+
+			// sendSystemMessage, not displayClientMessage: the latter with its
+			// boolean overlay argument is gone in 26.3.
+			if (client.player != null) {
+				client.player.sendSystemMessage(
+						net.minecraft.network.chat.Component.literal("Onigiri: " + message)
+								.withStyle(net.minecraft.ChatFormatting.RED));
+			}
+		} catch (RuntimeException | LinkageError e) {
+			// Chat is a courtesy; never let it turn into a second failure.
 		}
 	}
 
@@ -213,5 +251,10 @@ public class OnigiriClient implements ClientModInitializer {
 
 	public boolean hasFailed() {
 		return failed;
+	}
+
+	/** Consecutive render failures so far; shown in the settings menu. */
+	public int consecutiveFailures() {
+		return consecutiveFailures;
 	}
 }
