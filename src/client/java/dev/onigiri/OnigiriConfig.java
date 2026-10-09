@@ -46,8 +46,13 @@ public final class OnigiriConfig {
 	 * <p>An extra 0.5 takes the effects to quarter resolution, which is a further
 	 * fourfold saving in the chain. It is the single most effective knob on a
 	 * weak GPU, and the upsampler is designed to hide it.
+	 *
+	 * <p>Defaults to 0.75 rather than 1.0 because the device this was tuned on
+	 * runs at 2604x1202 - the effects chain is half of that, which is 1302x601,
+	 * and six passes over that is a lot of fill for a mobile tile-based GPU where
+	 * bandwidth, not arithmetic, is the limit.
 	 */
-	public float resolutionScale = 1.0f;
+	public float resolutionScale = 0.75f;
 
 	// --- effects -----------------------------------------------------------
 
