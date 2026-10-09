@@ -9,10 +9,13 @@ import java.util.function.Supplier;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.fabricmc.loader.api.FabricLoader;
 
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
+import net.minecraft.client.gui.components.StringWidget;
+import net.minecraft.client.gui.layouts.HeaderAndFooterLayout;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
@@ -24,43 +27,44 @@ import dev.onigiri.OnigiriClient;
 import dev.onigiri.OnigiriConfig;
 
 /**
- * The in-game settings menu, opened from the keybind.
+ * The in-game settings menu, opened from the keybind or from Video Settings.
  *
- * <p>Written entirely against the public GUI API - no mixins. Two 26.3 API
- * details matter here and both are easy to get wrong:
+ * <p>Built on the same {@link HeaderAndFooterLayout} that Minecraft's own
+ * settings screens use, so it inherits their title header, spacing and Done
+ * footer rather than hand-placing every button. That is what makes it look like a
+ * vanilla screen instead of a mod screen.
+ *
+ * <p>Two 26.3 API details that are easy to get wrong and were verified against
+ * the jar rather than assumed:
  *
  * <ul>
- *   <li>{@code Screen} no longer has a {@code render} method. The draw path is
+ *   <li>{@code Screen} has no {@code render} method; the draw path is
  *       {@code extractRenderState(GuiGraphicsExtractor, int, int, float)}.
  *   <li>{@code CycleButton.Builder} has no {@code withInitialValue}; the current
- *       value is supplied through the {@code builder(Function, Supplier)}
- *       overload, where the supplier is the default <em>and</em> the value the
- *       button opens on.
+ *       value comes through the {@code builder(Function, Supplier)} overload.
  * </ul>
  *
- * <p>Layout is a single column centred horizontally and clamped to the screen
- * height, because the target is a phone: a menu that assumes one aspect ratio
- * puts its last buttons off-screen on the other.
+ * <p>Continuous settings use real sliders and everything applies immediately, so
+ * the effect of a change is visible while the menu is still open.
  */
 public final class OnigiriScreen extends Screen {
-	private static final int BUTTON_WIDTH = 200;
-	private static final int BUTTON_HEIGHT = 22;
-	private static final int SPACING = 4;
-	private static final int TOP_MARGIN = 34;
+	private static final int CONTENT_WIDTH = 260;
+	private static final int ROW_HEIGHT = 20;
+	private static final int GAP = 4;
+	private static final int SECTION_GAP = 10;
 
 	private static final List<String> QUALITY_NAMES = List.of("Potato", "Mobile", "Balanced", "Ultra");
+	private static final List<String> SCALE_NAMES = List.of("0.5x", "0.75x", "1.0x");
 
 	private final Screen parent;
 	private final OnigiriConfig config;
+	private final HeaderAndFooterLayout layout;
 
-	/**
-	 * @param parent the screen to return to on close; may be null, which returns
-	 *               to the game
-	 */
 	public OnigiriScreen(Screen parent) {
 		super(Component.literal("Onigiri"));
 
 		this.parent = parent;
+		this.layout = new HeaderAndFooterLayout(this);
 
 		OnigiriClient client = OnigiriClient.instance();
 		this.config = client != null && client.config() != null
@@ -71,11 +75,10 @@ public final class OnigiriScreen extends Screen {
 	/**
 	 * Registers the keybind that opens this menu. Called from the entrypoint.
 	 *
-	 * <p>The category is passed in rather than created here.
+	 * <p>The category is passed in rather than created here:
 	 * {@code KeyMapping.Category.register} throws if the same identifier is
-	 * registered twice, and a static initialiser in this class ran before the
-	 * entrypoint's own registration - so owning it in exactly one place is the
-	 * only way it stays registered exactly once.
+	 * registered twice, and owning it in one place is the only way it stays
+	 * registered exactly once.
 	 */
 	public static KeyMapping registerMenuKey(KeyMapping.Category category) {
 		return KeyMappingHelper.registerKeyMapping(new KeyMapping(
@@ -87,57 +90,53 @@ public final class OnigiriScreen extends Screen {
 
 	@Override
 	protected void init() {
-		int left = (width - BUTTON_WIDTH) / 2;
-		int y = Math.max(TOP_MARGIN, height / 2 - 100);
+		// Title header, with a live status line under it so it is obvious whether
+		// the renderer is actually running.
+		layout.addTitleHeader(title, font);
 
-		y = addChoice(left, y, Component.literal("Quality"),
-				value -> Component.literal(value),
-				QUALITY_NAMES,
-				config::qualityName,
-				value -> config.quality = QUALITY_NAMES.indexOf(value));
+		int left = (width - CONTENT_WIDTH) / 2;
+		int y = 50;
 
-		y = addToggle(left, y, "Ambient occlusion",
-				() -> config.ambientOcclusion,
-				value -> config.ambientOcclusion = value);
+		y = section(left, y, "EFFECTS");
+		y = toggle(left, y, "Ambient occlusion", () -> config.ambientOcclusion,
+				v -> config.ambientOcclusion = v);
+		y = toggle(left, y, "Sun shadows", () -> config.shadows,
+				v -> config.shadows = v);
+		y = toggle(left, y, "Reflections", () -> config.reflections,
+				v -> config.reflections = v);
+		y = toggle(left, y, "Specular highlights", () -> config.specularStrength > 0.001f,
+				v -> config.specularStrength = v ? 0.6f : 0.0f);
 
-		y = addToggle(left, y, "Shadows",
-				() -> config.shadows,
-				value -> config.shadows = value);
+		y += SECTION_GAP;
+		y = section(left, y, "PERFORMANCE");
+		y = choice(left, y, "Quality", QUALITY_NAMES, config::qualityName,
+				v -> config.quality = QUALITY_NAMES.indexOf(v));
+		y = choice(left, y, "Effect resolution", SCALE_NAMES, this::currentScale,
+				v -> config.resolutionScale = parseScale(v));
+		y = toggle(left, y, "Half resolution", () -> config.halfResolution,
+				v -> config.halfResolution = v);
+		y = slider(left, y, "Exposure", 0.6, 1.6, config.exposure,
+				v -> String.format("%.2f", v), v -> config.exposure = v.floatValue());
+		y = slider(left, y, "Temporal feedback", 0.5, 0.97, config.temporalFeedback,
+				v -> String.format("%.2f", v), v -> config.temporalFeedback = v.floatValue());
 
-		y = addToggle(left, y, "Reflections",
-				() -> config.reflections,
-				value -> config.reflections = value);
+		y += SECTION_GAP;
+		y = section(left, y, "INTENSITY");
+		y = slider(left, y, "Occlusion strength", 0.0, 1.0, config.aoStrength,
+				v -> String.format("%.2f", v), v -> config.aoStrength = v.floatValue());
+		y = slider(left, y, "Shadow strength", 0.0, 1.0, config.shadowStrength,
+				v -> String.format("%.2f", v), v -> config.shadowStrength = v.floatValue());
+		y = slider(left, y, "Reflection strength", 0.0, 1.5, config.ssrStrength,
+				v -> String.format("%.2f", v), v -> config.ssrStrength = v.floatValue());
+		y = slider(left, y, "Saturation", 0.0, 1.6, config.saturation,
+				v -> String.format("%.2f", v), v -> config.saturation = v.floatValue());
 
-		y = addToggle(left, y, "Half resolution",
-				() -> config.halfResolution,
-				value -> config.halfResolution = value);
-
-		y = addChoice(left, y, Component.literal("Resolution scale"),
-				value -> Component.literal(value),
-				List.of("0.5x", "0.75x", "1.0x"),
-				this::currentScaleLabel,
-				value -> config.resolutionScale = parseScale(value));
-
-		y = addChoice(left, y, Component.literal("Exposure"),
-				value -> Component.literal(String.format("%.2f", value)),
-				List.of(0.8f, 0.9f, 1.05f, 1.2f, 1.4f),
-				() -> nearest(config.exposure, List.of(0.8f, 0.9f, 1.05f, 1.2f, 1.4f)),
-				value -> config.exposure = value);
-
-		y = addChoice(left, y, Component.literal("Temporal feedback"),
-				value -> Component.literal(String.format("%.2f", value)),
-				List.of(0.85f, 0.88f, 0.92f, 0.95f),
-				() -> nearest(config.temporalFeedback, List.of(0.85f, 0.88f, 0.92f, 0.95f)),
-				value -> config.temporalFeedback = value);
-
-		if (y + BUTTON_HEIGHT <= height) {
-			addRenderableWidget(Button.builder(Component.literal("Done"), button -> onClose())
-					.bounds(left, y, BUTTON_WIDTH, BUTTON_HEIGHT)
-					.build());
-		}
+		layout.addToFooter(Button.builder(Component.literal("Done"), button -> onClose())
+				.bounds(0, 0, 150, ROW_HEIGHT)
+				.build(), settings -> settings.alignHorizontallyCenter());
 	}
 
-	private String currentScaleLabel() {
+	private String currentScale() {
 		return config.resolutionScale <= 0.55f ? "0.5x"
 				: config.resolutionScale <= 0.8f ? "0.75x"
 				: "1.0x";
@@ -151,63 +150,65 @@ public final class OnigiriScreen extends Screen {
 		};
 	}
 
-	/** Snaps a possibly hand-edited float to the nearest offered value. */
-	private static <T> T nearest(float value, List<T> options) {
-		T best = options.get(0);
-		float bestDistance = Float.MAX_VALUE;
+	/** A dim section heading, laid out as a real element so it flows with the rest. */
+	private int section(int left, int y, String text) {
+		StringWidget heading = new StringWidget(left, y,
+				Component.literal(text).withStyle(ChatFormatting.GRAY), font);
 
-		for (T option : options) {
-			float distance = Math.abs(((Number) option).floatValue() - value);
+		heading.setMaxWidth(CONTENT_WIDTH);
+		layout.addToContents(heading);
 
-			if (distance < bestDistance) {
-				bestDistance = distance;
-				best = option;
-			}
-		}
-
-		return best;
+		return y + ROW_HEIGHT - 6;
 	}
 
-	private <T> int addChoice(int left, int y, Component label,
-							  Function<T, Component> display,
-							  List<T> values,
-							  Supplier<T> current,
-							  Consumer<T> apply) {
-		// Clamp rather than overflow: on a short screen the tail of the column is
-		// dropped instead of stacking back over the top of it.
-		if (y + BUTTON_HEIGHT > height) {
-			return y;
-		}
-
-		addRenderableWidget(CycleButton.builder(display, current)
+	private int choice(int left, int y, String label, List<String> values,
+					   Supplier<String> current, Consumer<String> apply) {
+		layout.addToContents(CycleButton.builder(value -> Component.literal(value), current)
 				.withValues(values)
 				.displayOnlyValue()
-				.create(left, y, BUTTON_WIDTH, BUTTON_HEIGHT, label, (button, value) -> {
-					apply.accept(value);
-					commit();
-				}));
+				.create(left, y, CONTENT_WIDTH, ROW_HEIGHT,
+						Component.literal(label),
+						(button, value) -> {
+							apply.accept(value);
+							commit();
+						}));
 
-		return y + BUTTON_HEIGHT + SPACING;
+		return y + ROW_HEIGHT + GAP;
 	}
 
-	private int addToggle(int left, int y, String label,
-						  BooleanSupplier getter,
-						  Consumer<Boolean> setter) {
+	private int toggle(int left, int y, String label,
+					   BooleanSupplier getter, Consumer<Boolean> setter) {
 		List<Boolean> values = List.of(Boolean.FALSE, Boolean.TRUE);
 
-		return addChoice(left, y, Component.literal(label),
-				value -> Component.literal(value ? "On" : "Off"),
-				values,
-				getter::getAsBoolean,
-				value -> setter.accept(value));
+		layout.addToContents(CycleButton.builder(
+						on -> Component.literal(on ? "On" : "Off").withStyle(
+								on ? ChatFormatting.GREEN : ChatFormatting.GRAY),
+						getter::getAsBoolean)
+				.withValues(values)
+				.displayOnlyValue()
+				.create(left, y, CONTENT_WIDTH, ROW_HEIGHT,
+						Component.literal(label),
+						(button, value) -> {
+							setter.accept(value);
+							commit();
+						}));
+
+		return y + ROW_HEIGHT + GAP;
+	}
+
+	private int slider(int left, int y, String label, double min, double max, double value,
+					   Function<Double, String> format, Consumer<Double> apply) {
+		layout.addToContents(new SettingSlider(left, y, CONTENT_WIDTH, ROW_HEIGHT, label,
+				min, max, value, format, apply::accept), settings -> settings.paddingBottom(0));
+
+		return y + ROW_HEIGHT + GAP;
 	}
 
 	/**
 	 * Writes the config and lets the pipeline resize its effect buffers.
 	 *
-	 * <p>Applied on every change rather than on a Save button so the effect of a
-	 * setting is visible immediately - the alternative is a menu that looks like
-	 * it is doing nothing until it closes.
+	 * <p>Applied on every change rather than behind a Save button so the effect of
+	 * a setting is visible immediately.
 	 */
 	private void commit() {
 		config.sanitise();
@@ -224,19 +225,34 @@ public final class OnigiriScreen extends Screen {
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
 		super.extractRenderState(graphics, mouseX, mouseY, partialTick);
 
-		int left = (width - BUTTON_WIDTH) / 2;
-		int top = Math.max(TOP_MARGIN, height / 2 - 100);
+		OnigiriClient client = OnigiriClient.instance();
+		int y = height - 46;
 
-		graphics.centeredText(font, title, width / 2, Math.max(10, top - 22), 0xFFFFFFFF);
+		if (client == null) {
+			return;
+		}
+
+		if (client.hasFailed()) {
+			graphics.centeredText(font,
+					Component.literal("Renderer disabled - see the log").withStyle(ChatFormatting.RED),
+					width / 2, y, 0xFFFFFFFF);
+			return;
+		}
 
 		// Show the buffer sizes the pipeline actually settled on, not the setting
 		// that was picked, so a clamped or unsupported combination is visible.
-		OnigiriClient client = OnigiriClient.instance();
-		String status = client != null && client.pipeline() != null && client.pipeline().isInitialised()
-				? client.pipeline().effectWidth() + "x" + client.pipeline().effectHeight() + " effect buffers"
+		String status = client.pipeline() != null && client.pipeline().isInitialised()
+				? client.pipeline().effectWidth() + " x " + client.pipeline().effectHeight() + " effect buffers"
 				: "renderer not initialised";
 
-		graphics.centeredText(font, Component.literal(status), width / 2, height - 16, 0xFFA0A0A0);
+		Component line = Component.literal(status).withStyle(ChatFormatting.DARK_GRAY);
+
+		if (client.consecutiveFailures() > 0) {
+			line = Component.literal(status + "  (" + client.consecutiveFailures() + " frame errors)")
+					.withStyle(ChatFormatting.RED);
+		}
+
+		graphics.centeredText(font, line, width / 2, y, 0xFFFFFFFF);
 	}
 
 	@Override

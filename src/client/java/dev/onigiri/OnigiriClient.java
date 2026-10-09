@@ -25,6 +25,7 @@ import dev.onigiri.pipeline.LightingModel;
 import dev.onigiri.pipeline.OnigiriPipeline;
 import dev.onigiri.pipeline.ProjectionModel;
 import dev.onigiri.ui.OnigiriScreen;
+import dev.onigiri.ui.VideoSettingsHook;
 
 /**
  * Mod entrypoint and render hook.
@@ -82,6 +83,10 @@ public class OnigiriClient implements ClientModInitializer {
 		LevelRenderEvents.END_MAIN.register(this::onLevelRenderEnd);
 		ClientTickEvents.END_CLIENT_TICK.register(this::onClientTick);
 		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> shutdown());
+
+		// Also reachable from Options > Video, so the settings do not require
+		// knowing the hotkey.
+		VideoSettingsHook.register();
 
 		LOGGER.info("Onigiri ready - F6 opens settings, F8 toggles the renderer");
 	}
