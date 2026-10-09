@@ -15,7 +15,7 @@ import org.lwjgl.system.MemoryUtil;
  * attachment IDs straight out of OpenGL.
  *
  * <p>That is the right trade here for two reasons: the shader pipeline is
- * inherently GL-specific (raw {@code GL30}/{@code GL31} calls, {@code RGBA16F}
+ * inherently GL-specific (raw {@code GL30}/{@code GL45} calls, {@code RGBA16F}
  * targets, fullscreen triangle), and querying the bound framebuffer is both
  * cheaper and more stable than reflecting over the backend abstraction.
  */
@@ -24,16 +24,13 @@ public final class FramebufferAccess {
 	}
 
 	/**
-	 * Returns the framebuffer currently bound for drawing, which during a level
-	 * render is the main render target.
-	 */
-	public static int currentFramebuffer() {
-		return GL30.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
-	}
-
-	/**
 	 * Returns the texture object attached to {@code attachment} of the currently
-	 * bound framebuffer, or {@code 0} when the slot is empty.
+	 * bound framebuffer, or {@code 0} when the slot is empty or is a renderbuffer
+	 * rather than a texture.
+	 *
+	 * <p>Note that a multisampled attachment has no single sampleable texture
+	 * object, so this returns 0 in that case and the caller correctly skips the
+	 * frame instead of reading a resolve-in-progress buffer.
 	 *
 	 * @param attachment one of {@code GL30.GL_COLOR_ATTACHMENT0} or
 	 *                   {@code GL30.GL_DEPTH_ATTACHMENT}
@@ -46,15 +43,25 @@ public final class FramebufferAccess {
 			return 0;
 		}
 
-		int[] result = new int[1];
-		GL30.glGetFramebufferAttachmentParameteriv(
-				GL30.GL_FRAMEBUFFER, attachment, GL30.GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, result);
-
-		if (GL30.glGetError() != GL30.GL_NO_ERROR) {
-			return 0;
+		// Clear any pre-existing error so the check below only reflects this call.
+		while (GL30.glGetError() != GL30.GL_NO_ERROR) {
+			// Drain.
 		}
 
-		return result[0];
+		IntBuffer result = MemoryUtil.memAllocInt(1);
+
+		try {
+			GL30.glGetFramebufferAttachmentParameteriv(
+					GL30.GL_FRAMEBUFFER, attachment, GL30.GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, result);
+
+			if (GL30.glGetError() != GL30.GL_NO_ERROR) {
+				return 0;
+			}
+
+			return result.get(0);
+		} finally {
+			MemoryUtil.memFree(result);
+		}
 	}
 
 	/** The colour texture of the bound framebuffer, or 0 for the default one. */
@@ -65,23 +72,6 @@ public final class FramebufferAccess {
 	/** The depth texture of the bound framebuffer, or 0 when unavailable. */
 	public static int boundDepthTexture() {
 		return attachedTexture(GL30.GL_DEPTH_ATTACHMENT);
-	}
-
-	/**
-	 * Reads a scalar render-buffer state value (such as
-	 * {@code GL30.GL_SAMPLES}) from the currently bound framebuffer.
-	 */
-	public static int framebufferParameter(int pname) {
-		int framebuffer = GL30.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
-
-		IntBuffer result = MemoryUtil.memAllocInt(1);
-
-		try {
-			GL30.glGetFramebufferParameteriv(framebuffer, pname, result);
-			return result.get(0);
-		} finally {
-			MemoryUtil.memFree(result);
-		}
 	}
 
 }
