@@ -1,0 +1,492 @@
+package dev.onigiri.pipeline;
+
+import dev.onigiri.OnigiriConfig;
+import dev.onigiri.gl.FramebufferAccess;
+import dev.onigiri.gl.RenderTarget;
+import dev.onigiri.gl.ShaderProgram;
+import dev.onigiri.gl.TemporalPair;
+
+import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL13;
+import org.lwjgl.opengl.GL30;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * The Onigiri post-processing chain.
+ *
+ * <p>Six passes per frame:
+ *
+ * <ol>
+ *   <li>geometry  - rebuild view normals and depth from the depth buffer (full res)
+ *   <li>ao        - horizon-based occlusion (half res)
+ *   <li>ssr       - screen-space reflections (half res)
+ *   <li>shadow    - screen-space sun shadows, quarter-rate (half res)
+ *   <li>temporal  - reproject and resolve history (half res, ping-pong, x3)
+ *   <li>composite - relight, fog, tonemap to the default framebuffer
+ * </ol>
+ *
+ * <p>Only the composite and the geometry reconstruction run at full resolution.
+ * Everything else is half res and temporally amortised, which is what keeps the
+ * chain cheaper than a single shadow map while looking better than one.
+ *
+ * <p>State discipline: each pass binds the framebuffer it needs, and the chain
+ * leaves the default framebuffer bound and depth writes re-enabled so the game
+ * can carry straight on to the HUD.
+ */
+public final class OnigiriPipeline implements AutoCloseable {
+	private static final Logger LOGGER = LoggerFactory.getLogger("onigiri/pipeline");
+
+	private static final String SHADER_DIR = "onigiri/shaders/";
+
+	/** Texture units, fixed up front so passes never contend for one. */
+	private static final int UNIT_DEPTH = 0;
+	private static final int UNIT_COLOR = 1;
+	private static final int UNIT_NORMAL_DEPTH = 2;
+	private static final int UNIT_CURRENT = 3;
+	private static final int UNIT_HISTORY = 4;
+	private static final int UNIT_AO = 5;
+	private static final int UNIT_SSR = 6;
+	private static final int UNIT_SHADOW = 7;
+	private static final int UNIT_COUNT = 8;
+
+	private ShaderProgram geometryShader;
+	private ShaderProgram aoShader;
+	private ShaderProgram ssrShader;
+	private ShaderProgram shadowShader;
+	private ShaderProgram temporalShader;
+	private ShaderProgram compositeShader;
+
+	private RenderTarget normalDepth;
+	private RenderTarget aoTarget;
+	private RenderTarget ssrTarget;
+	private RenderTarget shadowTarget;
+
+	private TemporalPair aoHistory;
+	private TemporalPair ssrHistory;
+	private TemporalPair shadowHistory;
+
+	private final OnigiriConfig config;
+	private final FrameState frame = new FrameState();
+
+	private int width;
+	private int height;
+	private int effectWidth;
+	private int effectHeight;
+
+	private int emptyVao;
+	private boolean initialised;
+	private boolean disposed;
+
+	public OnigiriPipeline(OnigiriConfig config) {
+		this.config = config;
+	}
+
+	/**
+	 * Compiles shaders and allocates render targets.
+	 *
+	 * <p>Deferred to first use rather than mod init, because compiling needs a
+	 * current GL context and none exists during {@code onInitializeClient}.
+	 */
+	public void initialise(int frameWidth, int frameHeight) {
+		if (disposed) {
+			throw new IllegalStateException("Pipeline already closed");
+		}
+
+		geometryShader = ShaderProgram.load(SHADER_DIR + "geometry.frag");
+		aoShader = ShaderProgram.load(SHADER_DIR + "ao.frag");
+		ssrShader = ShaderProgram.load(SHADER_DIR + "ssr.frag");
+		shadowShader = ShaderProgram.load(SHADER_DIR + "shadow.frag");
+		temporalShader = ShaderProgram.load(SHADER_DIR + "temporal.frag");
+		compositeShader = ShaderProgram.load(SHADER_DIR + "composite.frag");
+
+		width = Math.max(1, frameWidth);
+		height = Math.max(1, frameHeight);
+
+		// Core profile needs a bound vertex array even though the vertex shader
+		// derives positions from gl_VertexID. An empty VAO satisfies that.
+		emptyVao = org.lwjgl.opengl.GL30.glGenVertexArrays();
+		GL30.glBindVertexArray(emptyVao);
+
+		computeEffectSize();
+		allocateTargets();
+
+		initialised = true;
+		LOGGER.info("Onigiri pipeline ready ({}x{}, effects {}x{})", width, height, effectWidth, effectHeight);
+	}
+
+	private void computeEffectSize() {
+		if (config.halfResolution) {
+			effectWidth = Math.max(1, width / 2);
+			effectHeight = Math.max(1, height / 2);
+		} else {
+			effectWidth = width;
+			effectHeight = height;
+		}
+	}
+
+	private void allocateTargets() {
+		normalDepth = new RenderTarget(width, height);
+
+		aoTarget = new RenderTarget(effectWidth, effectHeight);
+		ssrTarget = new RenderTarget(effectWidth, effectHeight);
+		shadowTarget = new RenderTarget(effectWidth, effectHeight);
+
+		aoHistory = new TemporalPair(effectWidth, effectHeight);
+		ssrHistory = new TemporalPair(effectWidth, effectHeight);
+		shadowHistory = new TemporalPair(effectWidth, effectHeight);
+
+		frame.requestHistoryReset();
+	}
+
+	/** Reallocates on resize or when the half-resolution setting changes. */
+	public void resize(int newWidth, int newHeight) {
+		if (!initialised) {
+			return;
+		}
+
+		int w = Math.max(1, newWidth);
+		int h = Math.max(1, newHeight);
+
+		if (w == width && h == height) {
+			return;
+		}
+
+		width = w;
+		height = h;
+		computeEffectSize();
+
+		normalDepth.resize(width, height);
+		aoTarget.resize(effectWidth, effectHeight);
+		ssrTarget.resize(effectWidth, effectHeight);
+		shadowTarget.resize(effectWidth, effectHeight);
+		aoHistory.resize(effectWidth, effectHeight);
+		ssrHistory.resize(effectWidth, effectHeight);
+		shadowHistory.resize(effectWidth, effectHeight);
+
+		frame.requestHistoryReset();
+	}
+
+	/** Reacts to the half-resolution toggle taking effect mid-session. */
+	public void effectScaleChanged() {
+		if (!initialised) {
+			return;
+		}
+
+		computeEffectSize();
+
+		if (effectWidth == aoTarget.width() && effectHeight == aoTarget.height()) {
+			return;
+		}
+
+		aoTarget.resize(effectWidth, effectHeight);
+		ssrTarget.resize(effectWidth, effectHeight);
+		shadowTarget.resize(effectWidth, effectHeight);
+		aoHistory.resize(effectWidth, effectHeight);
+		ssrHistory.resize(effectWidth, effectHeight);
+		shadowHistory.resize(effectWidth, effectHeight);
+
+		frame.requestHistoryReset();
+	}
+
+	public FrameState frame() {
+		return frame;
+	}
+
+	/** Runs one frame. The caller must already have the world in the main FBO. */
+	public void render() {
+		if (!initialised) {
+			return;
+		}
+
+		int colorTexture = FramebufferAccess.boundColorTexture();
+		int depthTexture = FramebufferAccess.boundDepthTexture();
+
+		// The default framebuffer is not sampleable, so there is nothing to read
+		// from. Drop history and let the next frame try again.
+		if (depthTexture == 0 || colorTexture == 0) {
+			frame.requestHistoryReset();
+			return;
+		}
+
+		// Effects sample and write colour; blending and depth are done in-shader.
+		GL11.glDisable(GL11.GL_DEPTH_TEST);
+		GL11.glDisable(GL11.GL_BLEND);
+		GL11.glDisable(GL11.GL_CULL_FACE);
+		GL30.glBindVertexArray(emptyVao);
+
+		// The view matrix and its inverse are shared by several passes: the sky
+		// fallback converts ray directions between spaces, and the temporal pass
+		// reprojects through the inverse view-projection.
+		frame.view.set(frame.viewProjection);
+		frame.view.invert();
+		frame.viewInverse.set(frame.view).invert();
+		frame.inverseProjection.invert();
+		frame.inverseViewProjection.invert();
+
+		runGeometryPass(depthTexture);
+		runAoPass(depthTexture);
+		runSsrPass(depthTexture, colorTexture);
+		runShadowPass(depthTexture);
+
+		resolveTemporal(aoTarget, aoHistory, depthTexture);
+		resolveTemporal(ssrTarget, ssrHistory, depthTexture);
+		resolveTemporal(shadowTarget, shadowHistory, depthTexture);
+
+		runCompositePass(depthTexture, colorTexture);
+
+		frame.resetHistory = false;
+		frame.advanceFrame(frame.time);
+
+		unbindTextures();
+
+		// Leave the game the state it expects for the HUD.
+		GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+		GL11.glDepthMask(true);
+		GL11.glEnable(GL11.GL_DEPTH_TEST);
+	}
+
+	/** Uniforms shared by every pass that includes {@code common.glsl}. */
+	private void applyCommon(ShaderProgram shader, int depthTexture, int colorTexture) {
+		if (depthTexture != 0) {
+			shader.texture("uDepth", UNIT_DEPTH, depthTexture);
+		}
+
+		if (colorTexture != 0) {
+			shader.texture("uColor", UNIT_COLOR, colorTexture);
+		}
+
+		shader.uniformMatrix("uProj", frame.projection);
+		shader.uniformMatrix("uInvProj", frame.inverseProjection);
+		shader.uniformMatrix("uView", frame.view);
+		shader.uniformMatrix("uInvView", frame.viewInverse);
+		shader.uniformMatrix("uViewProj", frame.viewProjection);
+		shader.uniformMatrix("uInvViewProj", frame.inverseViewProjection);
+		shader.uniformMatrix("uPrevViewProj", frame.previousViewProjection);
+
+		shader.uniform2f("uResolution", width, height);
+		shader.uniform2f("uHalfResolution", effectWidth, effectHeight);
+		shader.uniform2f("uTexelSize", 1.0f / width, 1.0f / height);
+
+		shader.uniform3f("uCameraPos", frame.cameraPos.x, frame.cameraPos.y, frame.cameraPos.z);
+		shader.uniform3f("uSunDir", frame.sunDirection.x, frame.sunDirection.y, frame.sunDirection.z);
+		shader.uniform3f("uSunDirView", frame.sunDirectionView.x, frame.sunDirectionView.y, frame.sunDirectionView.z);
+		shader.uniform3f("uSunColor", frame.sunColor.x, frame.sunColor.y, frame.sunColor.z);
+		shader.uniform3f("uSkyColor", frame.skyColor.x, frame.skyColor.y, frame.skyColor.z);
+		shader.uniform3f("uAmbientColor", frame.ambientColor.x, frame.ambientColor.y, frame.ambientColor.z);
+
+		shader.uniform1f("uNear", frame.near);
+		shader.uniform1f("uFar", frame.far);
+		shader.uniform1f("uFrame", frame.frameCounter % 4096);
+		shader.uniform1f("uTime", frame.time);
+	}
+
+	/** Pass 1: view-space normals and linear depth, from the depth buffer alone. */
+	private void runGeometryPass(int depthTexture) {
+		normalDepth.bindForDrawing();
+
+		geometryShader.bind();
+		applyCommon(geometryShader, depthTexture, 0);
+
+		drawFullscreen();
+	}
+
+	/** Pass 2: horizon-based ambient occlusion. */
+	private void runAoPass(int depthTexture) {
+		if (!config.ambientOcclusion) {
+			clear(aoTarget, 1.0f, 1.0f, 1.0f, 1.0f);
+			return;
+		}
+
+		aoTarget.bindForDrawing();
+
+		aoShader.bind();
+		applyCommon(aoShader, depthTexture, 0);
+		aoShader.texture("uNormalDepth", UNIT_NORMAL_DEPTH, normalDepth.colorTextureId());
+		aoShader.uniform1i("uDirections", config.aoDirections());
+		aoShader.uniform1i("uSteps", config.aoSteps());
+		aoShader.uniform1f("uRadius", 0.75f);
+
+		drawFullscreen();
+	}
+
+	/** Pass 3: screen-space reflections. */
+	private void runSsrPass(int depthTexture, int colorTexture) {
+		if (!config.reflections) {
+			clear(ssrTarget, 0.0f, 0.0f, 0.0f, 0.0f);
+			return;
+		}
+
+		ssrTarget.bindForDrawing();
+
+		ssrShader.bind();
+		applyCommon(ssrShader, depthTexture, colorTexture);
+		ssrShader.texture("uNormalDepth", UNIT_NORMAL_DEPTH, normalDepth.colorTextureId());
+		ssrShader.uniform1i("uSteps", config.ssrSteps());
+		ssrShader.uniform1f("uMaxDistance", 48.0f);
+		ssrShader.uniform1f("uThickness", 0.55f);
+		ssrShader.uniform1f("uMaxRoughness", 0.92f);
+
+		drawFullscreen();
+	}
+
+	/**
+	 * Pass 4: screen-space sun shadows.
+	 *
+	 * <p>A quarter of the pixels trace a ray this frame; the temporal pass fills
+	 * in the rest. See {@code shadow.frag} for why that is affordable.
+	 */
+	private void runShadowPass(int depthTexture) {
+		if (!config.shadows) {
+			clear(shadowTarget, 1.0f, 1.0f, 1.0f, 1.0f);
+			return;
+		}
+
+		shadowTarget.bindForDrawing();
+
+		shadowShader.bind();
+		applyCommon(shadowShader, depthTexture, 0);
+		shadowShader.texture("uNormalDepth", UNIT_NORMAL_DEPTH, normalDepth.colorTextureId());
+		shadowShader.uniform1i("uSteps", config.shadowSteps());
+		shadowShader.uniform1f("uMaxDistance", 24.0f);
+		shadowShader.uniform1f("uThickness", 0.35f);
+		shadowShader.uniform1f("uSoftness", 0.8f);
+
+		drawFullscreen();
+	}
+
+	/**
+	 * Pass 5: temporal resolve for one effect.
+	 *
+	 * <p>Reads {@code source} plus {@code pair}'s read target, writes into its
+	 * write target, then swaps so the resolved result becomes next frame's
+	 * history.
+	 */
+	private void resolveTemporal(RenderTarget source, TemporalPair pair, int depthTexture) {
+		pair.write().bindForDrawing();
+
+		temporalShader.bind();
+		applyCommon(temporalShader, depthTexture, 0);
+		temporalShader.texture("uCurrent", UNIT_CURRENT, source.colorTextureId());
+		temporalShader.texture("uHistory", UNIT_HISTORY, pair.read().colorTextureId());
+		temporalShader.texture("uNormalDepth", UNIT_NORMAL_DEPTH, normalDepth.colorTextureId());
+
+		temporalShader.uniform2f("uSourceTexel", 1.0f / pair.width(), 1.0f / pair.height());
+		temporalShader.uniform1f("uFeedback", config.temporalFeedback);
+		temporalShader.uniform1f("uReset", frame.resetHistory ? 1.0f : 0.0f);
+		temporalShader.uniform1i("uHasHistory", frame.frameCounter > 1 ? 1 : 0);
+
+		drawFullscreen();
+
+		pair.swap();
+	}
+
+	/** Pass 6: relight, fog and tonemap into the default framebuffer. */
+	private void runCompositePass(int depthTexture, int colorTexture) {
+		GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+		GL11.glViewport(0, 0, width, height);
+
+		compositeShader.bind();
+		applyCommon(compositeShader, depthTexture, colorTexture);
+		compositeShader.texture("uNormalDepth", UNIT_NORMAL_DEPTH, normalDepth.colorTextureId());
+		compositeShader.texture("uAO", UNIT_AO, aoHistory.read().colorTextureId());
+		compositeShader.texture("uSSR", UNIT_SSR, ssrHistory.read().colorTextureId());
+		compositeShader.texture("uShadow", UNIT_SHADOW, shadowHistory.read().colorTextureId());
+
+		compositeShader.uniform1f("uAOStrength", config.aoStrength);
+		compositeShader.uniform1f("uSSRStrength", config.ssrStrength);
+		compositeShader.uniform1f("uShadowStrength", config.shadowStrength);
+		compositeShader.uniform1f("uSpecularStrength", config.specularStrength);
+		compositeShader.uniform1f("uExposure", config.exposure);
+		compositeShader.uniform1f("uVignette", config.vignette);
+		compositeShader.uniform1f("uSaturation", config.saturation);
+		compositeShader.uniform1f("uNightLift", config.nightLift);
+		compositeShader.uniform1f("uFogNear", frame.far * 0.55f);
+		compositeShader.uniform1f("uFogFar", frame.far * 0.95f);
+
+		drawFullscreen();
+	}
+
+	private void drawFullscreen() {
+		GL30.glDrawArrays(GL11.GL_TRIANGLES, 0, 3);
+	}
+
+	private void clear(RenderTarget target, float r, float g, float b, float a) {
+		target.bindForDrawing();
+		GL11.glClearColor(r, g, b, a);
+		GL30.glClear(GL30.GL_COLOR_BUFFER_BIT);
+	}
+
+	/**
+	 * Unbinds every texture unit the pipeline used.
+	 *
+	 * <p>Leaving a render target bound while the game draws the HUD would make
+	 * the driver complain about feedback loops, and stale samplers cost cache
+	 * misses on the next frame.
+	 */
+	private void unbindTextures() {
+		for (int unit = 0; unit < UNIT_COUNT; unit++) {
+			GL13.glActiveTexture(GL13.GL_TEXTURE0 + unit);
+			GL13.glBindTexture(GL13.GL_TEXTURE_2D, 0);
+		}
+	}
+
+	public int width() {
+		return width;
+	}
+
+	public int height() {
+		return height;
+	}
+
+	public int effectWidth() {
+		return effectWidth;
+	}
+
+	public int effectHeight() {
+		return effectHeight;
+	}
+
+	@Override
+	public void close() {
+		if (disposed) {
+			return;
+		}
+
+		disposed = true;
+
+		closeQuietly(geometryShader);
+		closeQuietly(aoShader);
+		closeQuietly(ssrShader);
+		closeQuietly(shadowShader);
+		closeQuietly(temporalShader);
+		closeQuietly(compositeShader);
+
+		closeQuietly(normalDepth);
+		closeQuietly(aoTarget);
+		closeQuietly(ssrTarget);
+		closeQuietly(shadowTarget);
+		closeQuietly(aoHistory);
+		closeQuietly(ssrHistory);
+		closeQuietly(shadowHistory);
+
+		if (emptyVao != 0) {
+			GL30.glDeleteVertexArrays(emptyVao);
+			emptyVao = 0;
+		}
+
+		initialised = false;
+	}
+
+	private static void closeQuietly(AutoCloseable closeable) {
+		if (closeable == null) {
+			return;
+		}
+
+		try {
+			closeable.close();
+		} catch (Exception e) {
+			LOGGER.warn("Failed to close {}", closeable.getClass().getSimpleName(), e);
+		}
+	}
+}
