@@ -1,5 +1,6 @@
 package dev.onigiri.pipeline;
 
+import org.joml.Matrix3fc;
 import org.joml.Matrix4f;
 
 import net.minecraft.client.Minecraft;
@@ -143,9 +144,15 @@ public final class ProjectionModel {
 		return true;
 	}
 
-	/** Transforms the world-space sun direction into view space. */
+	/**
+	 * Transforms the world-space sun direction into view space.
+	 *
+	 * <p>A direction, not a point, so the w component is dropped by the vector
+	 * overload of {@code mul}. Passing the 4-component form would divide by w and
+	 * skew any direction that is not axis-aligned.
+	 */
 	private static void updateSunInViewSpace(FrameState frame, Matrix4f view) {
-		frame.sunDirectionView.set(frame.sunDirection).mul(view);
+		frame.sunDirectionView.set(frame.sunDirection).mul((Matrix3fc) view);
 
 		float lengthSquared = frame.sunDirectionView.lengthSquared();
 
@@ -200,14 +207,16 @@ public final class ProjectionModel {
 		return view;
 	}
 
+	/** True when no component is NaN or infinite. */
 	private static boolean isFinite(Matrix4f matrix) {
-		for (int i = 0; i < 16; i++) {
-			if (!Float.isFinite(matrix.get(i))) {
-				return false;
-			}
-		}
-
-		return true;
+		return Float.isFinite(matrix.m00()) && Float.isFinite(matrix.m01())
+				&& Float.isFinite(matrix.m02()) && Float.isFinite(matrix.m03())
+				&& Float.isFinite(matrix.m10()) && Float.isFinite(matrix.m11())
+				&& Float.isFinite(matrix.m12()) && Float.isFinite(matrix.m13())
+				&& Float.isFinite(matrix.m20()) && Float.isFinite(matrix.m21())
+				&& Float.isFinite(matrix.m22()) && Float.isFinite(matrix.m23())
+				&& Float.isFinite(matrix.m30()) && Float.isFinite(matrix.m31())
+				&& Float.isFinite(matrix.m32()) && Float.isFinite(matrix.m33());
 	}
 
 	private static Object invokeNoArg(Object target, String methodName) {

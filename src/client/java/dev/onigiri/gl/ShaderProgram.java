@@ -8,10 +8,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import java.nio.FloatBuffer;
+
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL20;
+import org.lwjgl.system.MemoryUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,6 +50,15 @@ public final class ShaderProgram implements AutoCloseable {
 	private final int programId;
 	private final Map<String, Integer> locations = new HashMap<>();
 	private boolean disposed;
+
+	/**
+	 * Staging buffer for matrix uploads.
+	 *
+	 * <p>Static rather than per-instance: matrix uploads only ever happen on the
+	 * render thread, one pass at a time, so a single shared buffer is safe and
+	 * keeps the pipeline allocation-free once it is warm.
+	 */
+	private static final FloatBuffer MATRIX_BUFFER = MemoryUtil.memAllocFloat(16);
 
 	private ShaderProgram(String name, int programId) {
 		this.name = name;
@@ -213,7 +225,19 @@ public final class ShaderProgram implements AutoCloseable {
 
 	public ShaderProgram uniformMatrix(String uniform, Matrix4f value) {
 		int location = loc(uniform);
-		if (location >= 0) GL20.glUniformMatrix4fv(location, false, value);
+
+		if (location < 0) {
+			return this;
+		}
+
+		// LWJGL takes a FloatBuffer rather than the matrix directly, so the
+		// values are copied into a reusable staging buffer. A 16-float scratch
+		// buffer per program avoids allocating on every frame.
+		MATRIX_BUFFER.clear();
+		value.get(MATRIX_BUFFER);
+		MATRIX_BUFFER.flip();
+
+		GL20.glUniformMatrix4fv(location, false, MATRIX_BUFFER);
 		return this;
 	}
 

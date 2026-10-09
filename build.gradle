@@ -50,6 +50,9 @@ processResources {
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
 	it.options.encoding = "UTF-8"
+	// Full diagnostics. Without this, javac reports "no suitable method found"
+	// without listing the candidates, which makes a six-error build slow to fix.
+	it.options.compilerArgs << "-Xdiags:verbose"
 }
 
 java {

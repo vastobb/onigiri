@@ -1,6 +1,9 @@
 package dev.onigiri.gl;
 
+import java.nio.IntBuffer;
+
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.system.MemoryUtil;
 
 /**
  * Access to the game's main framebuffer attachments.
@@ -71,9 +74,14 @@ public final class FramebufferAccess {
 	public static int framebufferParameter(int pname) {
 		int framebuffer = GL30.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
 
-		int[] result = new int[1];
-		GL30.glGetFramebufferParameteriv(framebuffer, pname, result);
-		return result[0];
+		IntBuffer result = MemoryUtil.memAllocInt(1);
+
+		try {
+			GL30.glGetFramebufferParameteriv(framebuffer, pname, result);
+			return result.get(0);
+		} finally {
+			MemoryUtil.memFree(result);
+		}
 	}
 
 }

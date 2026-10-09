@@ -3,6 +3,7 @@ package dev.onigiri.gl;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL45;
 
 /**
  * A colour texture plus the framebuffer that renders into it.
@@ -58,7 +59,9 @@ public final class RenderTarget implements AutoCloseable {
 		colorTextureId = GL13.glGenTextures();
 		GL13.glBindTexture(GL13.GL_TEXTURE_2D, colorTextureId);
 
-		GL30.glTexStorage2D(GL30.GL_TEXTURE_2D, 1, GL30.GL_RGBA16F, width, height);
+		// Immutable storage: one level, no mip chain, allocated once at creation.
+		// A render target is always its own mip 0, so mipmaps would never be used.
+		GL45.glTexStorage2D(GL45.GL_TEXTURE_2D, 1, GL45.GL_RGBA16F, width, height);
 
 		GL11.glTexParameteri(GL13.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
 		GL11.glTexParameteri(GL13.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);

@@ -56,13 +56,13 @@ public class OnigiriClient implements ClientModInitializer {
 
 		toggleKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
 				"key.onigiri.toggle",
-				InputConstants.Type.KEYSYM,
+				InputConstants.Type.KEYBOARD,
 				org.lwjgl.sdl.SDLScancode.SDL_SCANCODE_F8,
 				category));
 
 		debugKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
 				"key.onigiri.debug",
-				InputConstants.Type.KEYSYM,
+				InputConstants.Type.KEYBOARD,
 				org.lwjgl.sdl.SDLScancode.SDL_SCANCODE_F9,
 				category));
 
