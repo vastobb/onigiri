@@ -37,23 +37,27 @@ public final class LightingModel {
 		// Vanilla's celestial angle: 0 ticks is sunrise, 6000 noon, 12000 sunset,
 		// 18000 midnight.
 		//
-		// The angle runs -90 at sunrise through 0 at noon. The sun therefore has
-		// to trace cos(angle) vertically, so elevation peaks at noon and dips
-		// below the horizon at midnight.
+		// The angle runs -90 at sunrise, 0 at noon, 90 at sunset and 180 at
+		// midnight. Elevation therefore has to be cos(angle) for the sun to peak
+		// overhead at noon, and the east-west component is -sin(angle).
 		float celestialAngle = timeOfDay * 360.0f - 90.0f;
 		float radians = (float) Math.toRadians(celestialAngle);
 
 		// The earlier version stored cos(angle) in a variable named `sin` and
-		// sin(angle) in one named `cos`, then used them the other way round. The
-		// result was a sun that sat on the horizon at noon and at the zenith at
-		// sunset - daylight and darkness swapped by six hours. Naming them for
-		// what they hold is the cheapest guard against that recurring.
+		// sin(angle) in one named `cos`, then used them the other way round, so
+		// elevation traced sin(angle): the sun sat on the horizon at noon and at
+		// the zenith at sunset, with day and night six hours out of phase.
+		//
+		// Both terms are named for what they hold and used accordingly. Renaming
+		// alone is not enough - swapping the names while keeping the usage is the
+		// same bug with better hygiene.
 		float cosAngle = (float) Math.cos(radians);
 		float sinAngle = (float) Math.sin(radians);
 
-		// The slight Z tilt matches the game's arc rather than a plain rotation
+		// -sin puts the sun in the east (+X) at sunrise and the west at sunset;
+		// the slight Z tilt matches the game's arc rather than a plain rotation
 		// about one axis.
-		frame.sunDirection.set(-cosAngle, sinAngle, 0.15f).normalize();
+		frame.sunDirection.set(-sinAngle, cosAngle, 0.15f).normalize();
 
 		float elevation = frame.sunDirection.y;
 
