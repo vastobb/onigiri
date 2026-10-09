@@ -15,7 +15,6 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.StringWidget;
-import net.minecraft.client.gui.layouts.HeaderAndFooterLayout;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
@@ -29,10 +28,10 @@ import dev.onigiri.OnigiriConfig;
 /**
  * The in-game settings menu, opened from the keybind or from Video Settings.
  *
- * <p>Built on the same {@link HeaderAndFooterLayout} that Minecraft's own
- * settings screens use, so it inherits their title header, spacing and Done
- * footer rather than hand-placing every button. That is what makes it look like a
- * vanilla screen instead of a mod screen.
+ * <p>Laid out as a single centred column with explicit bounds, matching the
+ * shape of Minecraft's own settings screens. Every widget is registered with
+ * {@code addRenderableWidget} rather than routed through a layout object, because
+ * that is the arrangement verified working on the target device.
  *
  * <p>Two 26.3 API details that are easy to get wrong and were verified against
  * the jar rather than assumed:
@@ -58,13 +57,11 @@ public final class OnigiriScreen extends Screen {
 
 	private final Screen parent;
 	private final OnigiriConfig config;
-	private final HeaderAndFooterLayout layout;
 
 	public OnigiriScreen(Screen parent) {
 		super(Component.literal("Onigiri"));
 
 		this.parent = parent;
-		this.layout = new HeaderAndFooterLayout(this);
 
 		OnigiriClient client = OnigiriClient.instance();
 		this.config = client != null && client.config() != null
@@ -90,12 +87,15 @@ public final class OnigiriScreen extends Screen {
 
 	@Override
 	protected void init() {
-		// Title header, with a live status line under it so it is obvious whether
-		// the renderer is actually running.
-		layout.addTitleHeader(title, font);
-
-		int left = (width - CONTENT_WIDTH) / 2;
-		int y = 50;
+		// Every widget is placed with explicit bounds and registered with
+		// addRenderableWidget. An earlier version routed them through
+		// HeaderAndFooterLayout, which is how Minecraft's own options screens are
+		// built - but getting the layout itself drawn requires knowing how it
+		// registers its children, and guessing at it produced a screen that
+		// opened blank. This is the arrangement that is known to work on the
+		// target device.
+		int left = Math.max(4, (width - CONTENT_WIDTH) / 2);
+		int y = Math.max(38, height / 2 - 108);
 
 		y = section(left, y, "EFFECTS");
 		y = toggle(left, y, "Ambient occlusion", () -> config.ambientOcclusion,
@@ -131,9 +131,11 @@ public final class OnigiriScreen extends Screen {
 		y = slider(left, y, "Saturation", 0.0, 1.6, config.saturation,
 				v -> String.format("%.2f", v), v -> config.saturation = v.floatValue());
 
-		layout.addToFooter(Button.builder(Component.literal("Done"), button -> onClose())
-				.bounds(0, 0, 150, ROW_HEIGHT)
-				.build(), settings -> settings.alignHorizontallyCenter());
+		// Footer, pinned to the bottom so it is always reachable however short the
+		// screen is.
+		addRenderableWidget(Button.builder(Component.literal("Done"), button -> onClose())
+				.bounds(left, height - ROW_HEIGHT - 24, CONTENT_WIDTH, ROW_HEIGHT)
+				.build());
 	}
 
 	private String currentScale() {
@@ -150,24 +152,24 @@ public final class OnigiriScreen extends Screen {
 		};
 	}
 
-	/** A dim section heading, laid out as a real element so it flows with the rest. */
+	/** A dim section heading. */
 	private int section(int left, int y, String text) {
 		StringWidget heading = new StringWidget(left, y,
 				Component.literal(text).withStyle(ChatFormatting.GRAY), font);
 
 		heading.setMaxWidth(CONTENT_WIDTH);
-		layout.addToContents(heading);
+		addRenderableWidget(heading);
 
-		return y + ROW_HEIGHT - 6;
+		return y + ROW_HEIGHT - 8;
 	}
 
 	private int choice(int left, int y, String label, List<String> values,
 					   Supplier<String> current, Consumer<String> apply) {
-		// The type witness is required, not decorative: CycleButton declares
+		// The type witness is required, not decorative: CycleButton declares both
 		// builder(Function, Supplier<T>) and builder(Function, T), and with T
-		// unbounded the second one can itself bind to Supplier<String>, so javac
-		// cannot choose between them without being told.
-		layout.addToContents(CycleButton.<String>builder(value -> Component.literal(value), current)
+		// unbounded the second can itself bind to Supplier, so javac cannot choose
+		// between them without being told.
+		addRenderableWidget(CycleButton.<String>builder(value -> Component.literal(value), current)
 				.withValues(values)
 				.displayOnlyValue()
 				.create(left, y, CONTENT_WIDTH, ROW_HEIGHT,
@@ -182,13 +184,11 @@ public final class OnigiriScreen extends Screen {
 
 	private int toggle(int left, int y, String label,
 					   BooleanSupplier getter, Consumer<Boolean> setter) {
-		List<Boolean> values = List.of(Boolean.FALSE, Boolean.TRUE);
-
-		layout.addToContents(CycleButton.<Boolean>builder(
+		addRenderableWidget(CycleButton.<Boolean>builder(
 						on -> Component.literal(on ? "On" : "Off").withStyle(
 								on ? ChatFormatting.GREEN : ChatFormatting.GRAY),
 						getter::getAsBoolean)
-				.withValues(values)
+				.withValues(List.of(Boolean.FALSE, Boolean.TRUE))
 				.displayOnlyValue()
 				.create(left, y, CONTENT_WIDTH, ROW_HEIGHT,
 						Component.literal(label),
@@ -202,8 +202,8 @@ public final class OnigiriScreen extends Screen {
 
 	private int slider(int left, int y, String label, double min, double max, double value,
 					   Function<Double, String> format, Consumer<Double> apply) {
-		layout.addToContents(new SettingSlider(left, y, CONTENT_WIDTH, ROW_HEIGHT, label,
-				min, max, value, format, apply::accept), settings -> settings.paddingBottom(0));
+		addRenderableWidget(new SettingSlider(left, y, CONTENT_WIDTH, ROW_HEIGHT, label,
+				min, max, value, format, apply::accept));
 
 		return y + ROW_HEIGHT + GAP;
 	}
@@ -223,23 +223,6 @@ public final class OnigiriScreen extends Screen {
 		if (client != null && client.pipeline() != null) {
 			client.pipeline().effectScaleChanged();
 		}
-	}
-
-	/**
-	 * Arranges the layout and registers it as a renderable.
-	 *
-	 * <p>This is the step that was missing, and it is why the screen came up
-	 * blank: elements were being added to the {@link HeaderAndFooterLayout} but
- * the layout itself was never added to the screen, so it was laid out and then
-	 * never drawn. Vanilla's own {@code OptionsSubScreen} does exactly this pair
-	 * of calls in its {@code repositionElements}, which is also where the screen
-	 * resizes the layout, so overriding it is the supported hook rather than a
-	 * workaround.
-	 */
-	@Override
-	protected void repositionElements() {
-		layout.arrangeElements();
-		addRenderableWidget(layout);
 	}
 
 	@Override
