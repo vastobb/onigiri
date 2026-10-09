@@ -79,10 +79,15 @@ jobs:
       # Releases are cut manually rather than on every push. Each push already
       # produces a downloadable artifact above; turning that into a release for
       # every commit would bury the actual downloads in noise.
-      - name: Attach to GitHub Release
+      #
+      # tag_name must be explicit: without an existing release the action has
+      # nothing to infer a tag from and fails.
+      - name: Create draft release
         if: github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
           files: build/libs/*.jar
           draft: true
           generate_release_notes: true
